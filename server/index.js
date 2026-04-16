@@ -304,6 +304,112 @@ const startServer = async () => {
       }
     });
 
+    // 🔥 NEW: Download endpoint with proper authentication
+    app.get("/api/files/:fileId/download", authenticate, async (req, res) => {
+      try {
+        const { fileId } = req.params;
+        console.log('📥 Download request for file:', fileId);
+        console.log('📥 User ID:', req.userId);
+
+        // Check if user has access to this file
+        const file = await File.findOne({
+          _id: fileId,
+          $or: [
+            { userId: req.userId },
+            { receiverId: req.userId }
+          ]
+        });
+
+        if (!file) {
+          console.error('❌ File not found in database or access denied:', fileId);
+          return res.status(404).json({ message: 'File not found or access denied' });
+        }
+
+        console.log('✅ File found:', file.filename);
+        console.log('📍 File path:', file.path);
+
+        // Construct the file path - handle both /uploads/ prefix and raw filename
+        let filePath;
+        if (file.path && file.path.startsWith('/uploads/')) {
+          filePath = path.join(__dirname, file.path);
+        } else if (file.path) {
+          filePath = file.path;
+        } else {
+          filePath = path.join(uploadDir, file.filename);
+        }
+
+        console.log('🔍 Looking for file at:', filePath);
+
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+          console.error('❌ File not found on disk:', filePath);
+          console.log('📁 Upload dir contents:', fs.readdirSync(uploadDir).slice(0, 10));
+          return res.status(404).json({ message: 'File not found on server' });
+        }
+
+        console.log('✅ File exists on disk');
+
+        // Get actual file size from disk
+        const stats = fs.statSync(filePath);
+        console.log('📊 File size from disk:', stats.size);
+
+        // Set response headers for download
+        res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
+        res.setHeader('Content-Length', stats.size);
+
+        // Send the file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+
+        fileStream.on('error', (err) => {
+          console.error('❌ File stream error:', err);
+          if (!res.headersSent) {
+            res.status(500).json({ message: 'Error reading file' });
+          }
+        });
+      } catch (error) {
+        console.error('❌ Download error:', error);
+        res.status(500).json({ message: error.message });
+      }
+    });
+
+    // 🔥 DEBUG: Check file existence
+    app.get("/api/debug/files", authenticate, async (req, res) => {
+      try {
+        const files = await File.find({ 
+          $or: [
+            { userId: req.userId },
+            { receiverId: req.userId }
+          ]
+        }).limit(5);
+
+        const filesInfo = files.map(f => {
+          const filePath = f.path && f.path.startsWith('/uploads/')
+            ? path.join(__dirname, f.path)
+            : path.join(uploadDir, f.filename);
+          
+          const exists = fs.existsSync(filePath);
+          const stats = exists ? fs.statSync(filePath) : null;
+
+          return {
+            id: f._id,
+            filename: f.filename,
+            originalName: f.originalName,
+            path: f.path,
+            dbSize: f.size,
+            diskPath: filePath,
+            existsOnDisk: exists,
+            actualSize: stats?.size || 0
+          };
+        });
+
+        res.json(filesInfo);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     app.delete("/api/files/:id", authenticate, async (req, res) => {
       try {
         const { id } = req.params;

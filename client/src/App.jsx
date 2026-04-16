@@ -104,7 +104,7 @@ const AppContent = ({
   );
 };
 
-const API_URL = import.meta.env.VITE_API_URL || 'https://dropit-final-4.onrender.com';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const App = () => {
   const [currentGesture, setCurrentGesture] = useState(null);

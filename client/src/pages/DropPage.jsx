@@ -12,7 +12,7 @@ import twitterImg from './vecteezy_twitter-png-icon_16716486.png';
 import NavBar from '../components/NavBar';
 
 const DROP_COOLDOWN = 10000;
-const API_URL = 'https://dropit-final-4.onrender.com';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const CONFIDENCE_THRESHOLD = 0.7;
 
 const DropPage = ({ currentGesture, gestureConfidence, user, onLogout }) => {

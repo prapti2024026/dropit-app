@@ -235,7 +235,14 @@
   justify-content: center;
   cursor: pointer;
   transition: all 0.3s ease;
-  font-size: 0;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.action-btn svg {
+  pointer-events: none;
+  width: 18px;
+  height: 18px;
 }
 
 .action-btn:hover {
@@ -249,10 +256,18 @@
   color: #00fff0;
 }
 
+.download-btn:active {
+  transform: scale(0.95);
+}
+
 .delete-btn:hover {
   background: rgba(204, 0, 0, 0.25);
   border-color: rgba(204, 0, 0, 0.5);
   color: #ff6b6b;
+}
+
+.delete-btn:active {
+  transform: scale(0.95);
 }
 
 .empty-state {

@@ -11,7 +11,8 @@ import twitterImg from './vecteezy_twitter-png-icon_16716486.png';
 
 import NavBar from '../components/NavBar';
 
-const API_URL =  'https://dropit-final-4.onrender.com';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 
 const HistoryTable = ({ data, title, typeColor, onDownload, onDelete }) => (
   <div className="history-section">
@@ -66,6 +67,7 @@ const HistoryTable = ({ data, title, typeColor, onDownload, onDelete }) => (
                     event.stopPropagation();
                     onDownload(item.id);
                   }}
+                  title="Download this file"
                 >
                   <Download size={18} />
                 </button>
@@ -77,6 +79,7 @@ const HistoryTable = ({ data, title, typeColor, onDownload, onDelete }) => (
                     event.stopPropagation();
                     onDelete(item.id);
                   }}
+                  title="Delete this file"
                 >
                   <Trash2 size={18} />
                 </button>
@@ -135,6 +138,8 @@ const HistoryPage = ({ user, onLogout }) => {
           const filePath = file.path || `/uploads/${file.filename}`;
           const downloadUrl = `${API_URL}${filePath}`;
 
+          console.log('File:', file.filename, 'Original Name:', file.originalName, 'Size:', file.size, 'URL:', downloadUrl);
+
           return {
             id: file._id,
             fileName: file.originalName,
@@ -184,30 +189,81 @@ const HistoryPage = ({ user, onLogout }) => {
   };
 
   const handleDownload = async (id) => {
-    const fileToDownload = transferHistory.find(item => item.id === id);
-    if (!fileToDownload || !fileToDownload.downloadUrl) {
-      console.error('Download failed: file data missing', id);
-      return;
-    }
-
     try {
-      const response = await axios.get(fileToDownload.downloadUrl, {
-        responseType: 'blob'
+      console.log('=== DOWNLOAD STARTED FOR ID:', id);
+      
+      const fileToDownload = transferHistory.find(item => item.id === id);
+      console.log('File to download:', fileToDownload);
+      
+      if (!fileToDownload) {
+        alert('File not found in history');
+        return;
+      }
+
+      const token = localStorage.getItem('token');
+      console.log('Token exists:', !!token);
+      
+      if (!token) {
+        alert('Please login first to download');
+        return;
+      }
+
+      // Use new authenticated download endpoint
+      const downloadUrl = `${API_URL}/api/files/${id}/download`;
+      console.log('Download URL:', downloadUrl);
+
+      console.log('Attempting to fetch:', downloadUrl);
+      
+      const response = await axios.get(downloadUrl, {
+        responseType: 'blob',
+        headers: {
+          Authorization: token
+        },
+        timeout: 30000
       });
 
-      const blob = new Blob([response.data], {
-        type: response.data.type || fileToDownload.mimeType || 'application/octet-stream'
-      });
-      const url = window.URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = fileToDownload.originalName || fileToDownload.fileName || 'download';
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
+      console.log('Response received!');
+      console.log('Status:', response.status);
+      console.log('Blob size:', response.data.size);
+      console.log('Content-Type:', response.headers['content-type']);
+
+      if (!response.data || response.data.size === 0) {
+        alert('No data received from server');
+        return;
+      }
+
+      // Create and trigger download
+      const url = window.URL.createObjectURL(response.data);
+      console.log('Object URL created:', url);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileToDownload.originalName || fileToDownload.fileName || `download_${id}`;
+      
+      console.log('Download filename:', link.download);
+      
+      document.body.appendChild(link);
+      link.click();
+      
+      setTimeout(() => {
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        console.log('=== DOWNLOAD COMPLETED ===');
+        alert('Download completed!');
+      }, 100);
+
     } catch (error) {
-      console.error('Download failed', error);
+      console.error('=== DOWNLOAD ERROR ===');
+      console.error('Error message:', error.message);
+      console.error('Error code:', error.code);
+      console.error('Full error:', error);
+      
+      if (error.response) {
+        console.error('Response status:', error.response.status);
+        console.error('Response data:', error.response.data);
+      }
+      
+      alert(`Download failed: ${error.message}`);
     }
   };
 

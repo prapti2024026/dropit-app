@@ -18,7 +18,7 @@ const Login = ({ isOpen, onClose, onLogin }) => {
     });
   };
 
-  const API_URL = 'https://dropit-final-4.onrender.com';
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
   const handleSubmit = async (e) => {
     e.preventDefault();

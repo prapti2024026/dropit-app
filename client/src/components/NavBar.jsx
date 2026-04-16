@@ -21,7 +21,7 @@ const NavBar = ({ isLoggedIn = false, onLogin, onLogout }) => {
   const handleLogout = async () => {
     setShowUserMenu(false);
     const token = localStorage.getItem('token');
-    const API_URL =  'https://dropit-final-4.onrender.com';
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
     
     try {
       await fetch(`${API_URL}/api/auth/logout`, {
