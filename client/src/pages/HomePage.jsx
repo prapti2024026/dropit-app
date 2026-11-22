@@ -1,170 +1,189 @@
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Upload, Home, ExternalLink } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Upload, FolderUp, Send, X, CheckCircle2 } from "lucide-react";
 import { Link } from "react-router-dom";
-import './HomePage.css';
-import SampleVideo from './Sample_video.mp4';
-import facebookImg from './vecteezy_facebook-logo-png-facebook-icon-transparent-white-background_41643208.png';
-import instagramImg from './vecteezy_instagram-logo-png-instagram-icon-transparent_18930413.png';
-import linkedinImg from './vecteezy_linkedin-logo-png-linkedin-icon-transparent-png_18930480.png';
-import twitterImg from './vecteezy_twitter-png-icon_16716486.png';
-import NavBar from '../components/NavBar';
+import axios from "axios";
 
-const GRAB_COOLDOWN = 10000;
-const USER_ID = import.meta.env.VITE_USER_ID || 'id1';
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-const CONFIDENCE_THRESHOLD = 0.7;
+import "./HomePage.css";
+import "./Transfer.css";
+import SampleVideo from "./Sample_video.mp4";
+import NavBar from "../components/NavBar";
+import SiteFooter from "../components/SiteFooter";
+import GestureDetector from "../components/GestureDetector";
+import FileCard from "../components/FileCard";
+import { API_URL, authHeaders, errorMessage } from "../lib/api";
+import { MAX_UPLOAD_BYTES, categoryOf, formatSize, sha256Hex, zipFolder } from "../lib/files";
 
-const HomePage = ({ currentGesture, gestureConfidence, user, onLogout }) => {
+// Seconds between the grab gesture and the actual upload, so a wrong grab can be cancelled
+const SEND_CONFIRM_SECONDS = 3;
 
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [isGrabbing, setIsGrabbing] = useState(false);
-  const [hasGrabbed, setHasGrabbed] = useState(false);
-  const [receiverUsername, setReceiverUsername] = useState(import.meta.env.VITE_RECEIVER_USERNAME || '');
+const HomePage = ({ user, onLogout }) => {
+  const [selected, setSelected] = useState(null); // { file, isFolder, folderName, count, previewUrl }
+  const [receiverUsername, setReceiverUsername] = useState(import.meta.env.VITE_RECEIVER_USERNAME || "");
 
-  const lastGrabTime = useRef(0);
+  // idle -> preparing -> countdown -> uploading -> sent  (or back to idle / error)
+  const [phase, setPhase] = useState("idle");
+  const [countdown, setCountdown] = useState(SEND_CONFIRM_SECONDS);
+  const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("");
+  const [receiver, setReceiver] = useState(null); // { id, username }
 
-  const [shouldGrab, setShouldGrab] = useState(false);
+  const countdownTimer = useRef(null);
+  const uploadAbort = useRef(null);
 
-  const handleGrab = useCallback(async () => {
-    if (!selectedImage || isGrabbing) return;
+  // Free the preview's object URL when the selection changes or the page closes
+  useEffect(() => () => selected?.previewUrl && URL.revokeObjectURL(selected.previewUrl), [selected]);
 
-    if (!receiverUsername.trim()) {
-      alert('Please enter a receiver username');
+  useEffect(() => () => clearInterval(countdownTimer.current), []);
+
+  const resetTransfer = () => {
+    clearInterval(countdownTimer.current);
+    uploadAbort.current?.abort();
+    setPhase("idle");
+    setProgress(0);
+    setMessage("");
+    setReceiver(null);
+  };
+
+  const clearSelection = () => {
+    resetTransfer();
+    setSelected(null);
+  };
+
+  const pickFile = (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setMessage(`"${file.name}" is ${formatSize(file.size)}. The limit is ${formatSize(MAX_UPLOAD_BYTES)}.`);
+      setPhase("error");
       return;
     }
+    resetTransfer();
+    const kind = categoryOf(file.type, file.name);
+    const previewUrl = kind === "image" || kind === "video" ? URL.createObjectURL(file) : null;
+    setSelected({ file, isFolder: false, previewUrl });
+  };
 
-    lastGrabTime.current = Date.now();
-    setIsGrabbing(true);
-
-    const token = localStorage.getItem('token');
-    if (!token) {
-      alert('Please login first');
-      setIsGrabbing(false);
-      return;
-    }
-
-    const receiver = receiverUsername.trim();
-    
+  const pickFolder = async (event) => {
+    const files = event.target.files;
+    if (!files?.length) return;
+    resetTransfer();
+    setPhase("preparing");
+    setMessage("Zipping folder…");
     try {
-      const userResponse = await fetch(`${API_URL}/api/auth/user/${encodeURIComponent(receiver)}`, {
-        method: 'GET',
-        mode: 'cors',
-        headers: {
-          'Authorization': token
-        }
-      });
-      
-      if (!userResponse.ok) {
-        if (userResponse.status === 401) {
-          alert('Authentication failed. Please login again.');
-        } else if (userResponse.status === 404) {
-          alert('Receiver not found. Please check the username or email.');
-        } else {
-          const errorData = await userResponse.json().catch(() => ({}));
-          alert('Unable to find receiver: ' + (errorData.error || userResponse.statusText));
-        }
-        setIsGrabbing(false);
+      const zipped = await zipFolder(files, (ratio) => setProgress(ratio));
+      event.target.value = "";
+      if (zipped.file.size > MAX_UPLOAD_BYTES) {
+        setPhase("error");
+        setMessage(`The zipped folder is ${formatSize(zipped.file.size)}. The limit is ${formatSize(MAX_UPLOAD_BYTES)}.`);
         return;
       }
-      
-      const userData = await userResponse.json();
-      const receiverUserId = userData.user?.id;
-
-      if (!receiverUserId) {
-        alert('Receiver lookup succeeded but no user ID was returned. Please try again.');
-        setIsGrabbing(false);
-        return;
-      }
-
-      const formData = new FormData();
-      formData.append('file', selectedImage);
-      formData.append('type', 'send');
-      formData.append('exchangedWith', receiverUserId);
-
-      const response = await fetch(`${API_URL}/api/upload`, {
-        method: "POST",
-        mode: 'cors',
-        headers: {
-          'Authorization': token
-        },
-        body: formData
-      });
-      
-      const data = await response.json();
-
-      if (data.success) {
-        setHasGrabbed(true);
-        setTimeout(() => {
-          setIsGrabbing(false);
-          setHasGrabbed(false);
-        }, 2000);
-      } else {
-        setIsGrabbing(false);
-        alert('Upload failed: ' + data.message);
-      }
+      setSelected({ file: zipped.file, isFolder: true, folderName: zipped.folderName, count: zipped.count });
+      setPhase("idle");
+      setMessage("");
+      setProgress(0);
     } catch (error) {
-      console.error(error);
-      setIsGrabbing(false);
-      alert('Upload error: ' + error.message);
+      setPhase("error");
+      setMessage(`Could not zip the folder: ${errorMessage(error)}`);
     }
-  }, [selectedImage, receiverUsername, isGrabbing]);
+  };
 
-  useEffect(() => {
-    const timeSinceLastGrab = Date.now() - lastGrabTime.current;
-    let grabTimeout;
+  const upload = useCallback(
+    async (target) => {
+      if (!selected) return;
+      setPhase("uploading");
+      setProgress(0);
+      setMessage("Checking file integrity…");
 
-    if (currentGesture === 'grab' &&
-      gestureConfidence > CONFIDENCE_THRESHOLD &&
-      selectedImage &&
-      !isGrabbing &&
-      !hasGrabbed &&
-      timeSinceLastGrab > GRAB_COOLDOWN
-    ) {
-      grabTimeout = window.setTimeout(() => {
-        setShouldGrab(true);
-      }, 0);
-    }
+      try {
+        const hash = await sha256Hex(selected.file);
+        const form = new FormData();
+        form.append("file", selected.file);
+        form.append("exchangedWith", target.id);
+        form.append("isFolder", String(selected.isFolder));
+        if (hash) form.append("sha256", hash);
 
-    return () => {
-      if (grabTimeout) {
-        clearTimeout(grabTimeout);
+        uploadAbort.current = new AbortController();
+        setMessage(`Sending to ${target.username}…`);
+
+        const { data } = await axios.post(`${API_URL}/api/upload`, form, {
+          headers: authHeaders(),
+          signal: uploadAbort.current.signal,
+          onUploadProgress: (event) => event.total && setProgress(event.loaded / event.total)
+        });
+
+        if (!data.success) throw new Error(data.message);
+        setPhase("sent");
+        setMessage(`Sent. Waiting for ${target.username} to make the DROP gesture.`);
+      } catch (error) {
+        if (axios.isCancel(error)) return;
+        setPhase("error");
+        setMessage(`Upload failed: ${errorMessage(error)}`);
       }
-    };
-  }, [currentGesture, gestureConfidence, selectedImage, isGrabbing, hasGrabbed]);
+    },
+    [selected]
+  );
 
-  useEffect(() => {
-    if (!shouldGrab) return;
+  // Step 1 of sending: find the receiver, then start the cancel window
+  const startSend = useCallback(
+    async ({ skipCountdown = false } = {}) => {
+      if (!selected || phase !== "idle") return;
 
-    const executeGrab = async () => {
-      await handleGrab();
-      setShouldGrab(false);
-    };
-
-    executeGrab();
-  }, [shouldGrab, handleGrab]);
-
-  const handleImageSelect = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setSelectedImage(file);
-      setHasGrabbed(false);
-      lastGrabTime.current = 0;
-
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result);
+      const name = receiverUsername.trim();
+      if (!name) {
+        setPhase("error");
+        setMessage("Enter the receiver's username or email first.");
+        return;
       }
-      reader.readAsDataURL(file);
-    }
-  }
 
-  const handleCancelImage = () => {
-    setSelectedImage(null);
-    setImagePreview(null);
-    setHasGrabbed(false);
-    lastGrabTime.current = 0;
-  }
+      setPhase("preparing");
+      setMessage("Finding receiver…");
+      try {
+        const { data } = await axios.get(`${API_URL}/api/auth/user/${encodeURIComponent(name)}`, {
+          headers: authHeaders()
+        });
+        const target = { id: data.user.id, username: data.user.username };
+        setReceiver(target);
+
+        if (skipCountdown) {
+          upload(target);
+          return;
+        }
+
+        setPhase("countdown");
+        setCountdown(SEND_CONFIRM_SECONDS);
+        let left = SEND_CONFIRM_SECONDS;
+        clearInterval(countdownTimer.current);
+        countdownTimer.current = setInterval(() => {
+          left -= 1;
+          setCountdown(left);
+          if (left <= 0) {
+            clearInterval(countdownTimer.current);
+            upload(target);
+          }
+        }, 1000);
+      } catch (error) {
+        setPhase("error");
+        setMessage(
+          error?.response?.status === 404
+            ? `No user called "${name}". Check the username or email.`
+            : `Could not find receiver: ${errorMessage(error)}`
+        );
+      }
+    },
+    [selected, phase, receiverUsername, upload]
+  );
+
+  const handleGestureEvent = useCallback(
+    (type) => {
+      if (type === "grab") startSend();
+    },
+    [startSend]
+  );
+
+  const armed = Boolean(selected && receiverUsername.trim() && phase === "idle");
+  const kind = selected ? categoryOf(selected.file.type, selected.file.name) : null;
+  const previewUrl = selected?.previewUrl;
 
   return (
     <>
@@ -173,156 +192,125 @@ const HomePage = ({ currentGesture, gestureConfidence, user, onLogout }) => {
         <source src={SampleVideo} type="video/mp4" />
       </video>
       <div className="background-overlay"></div>
+
+      <GestureDetector
+        onEvent={handleGestureEvent}
+        armed={armed}
+        armedText="Ready: open your hand, then close it into a fist to send."
+        idleText={!selected ? "Pick a file or folder to arm the grab gesture." : "Enter a receiver to arm the grab gesture."}
+        hint="GRAB = open hand → fist"
+      />
+
       <div className="home-page-container">
-      {
-        !imagePreview ? (
-          <div className="home-page-content glass-effect-home">
-            <h1 className="home-page-title">
-              Image Transfer
-            </h1>
-            <p className="home-page-subtitle">
-              Select an image, then make a <strong>"GRAB"</strong> gesture
-            </p>
-            
-            {/* Receiver Username Input */}
-            <div className="receiver-input-container">
-              <label htmlFor="receiver-username" className="receiver-label">
-                Send to Username:
+        <div className="home-page-content glass-effect-home transfer-card">
+          <h1 className="home-page-title">Send a File</h1>
+          <p className="home-page-subtitle">
+            Choose any file or folder, then make a <strong>GRAB</strong> gesture
+          </p>
+
+          <div className="receiver-input-container">
+            <label htmlFor="receiver-username" className="receiver-label">Send to (username or email):</label>
+            <input
+              id="receiver-username"
+              type="text"
+              value={receiverUsername}
+              onChange={(event) => setReceiverUsername(event.target.value)}
+              placeholder="Receiver's username"
+              className="receiver-input"
+              disabled={phase !== "idle" && phase !== "error"}
+              autoComplete="off"
+            />
+          </div>
+
+          {!selected ? (
+            <div className="picker-row">
+              <label className="home-upload-area picker">
+                <Upload className="home-upload-icon" />
+                <span className="home-upload-text">Choose file</span>
+                <input type="file" className="hidden" onChange={pickFile} />
               </label>
-              <input
-                id="receiver-username"
-                type="text"
-                value={receiverUsername}
-                onChange={(e) => setReceiverUsername(e.target.value)}
-                placeholder="Enter receiver's username"
-                className="receiver-input"
-                required
+              <label className="home-upload-area picker">
+                <FolderUp className="home-upload-icon" />
+                <span className="home-upload-text">Choose folder</span>
+                <input type="file" className="hidden" webkitdirectory="" directory="" multiple onChange={pickFolder} />
+              </label>
+            </div>
+          ) : (
+            <div className="selected-preview">
+              {kind === "image" && previewUrl && <img src={previewUrl} alt={selected.file.name} className="preview-media" />}
+              {kind === "video" && previewUrl && <video src={previewUrl} className="preview-media" controls muted playsInline />}
+              <FileCard
+                name={selected.isFolder ? `${selected.folderName}/` : selected.file.name}
+                size={selected.file.size}
+                mimeType={selected.file.type}
+                isFolder={selected.isFolder}
+                note={selected.isFolder ? `${selected.count} files, sent as ${selected.file.name}` : null}
               />
             </div>
+          )}
 
-            <label className="home-upload-area">
-              <Upload className="home-upload-icon" />
-              <span className="home-upload-text">Click to select image</span>
-              <input type="file" className="hidden" accept="image/*" onChange={handleImageSelect} />
-            </label>
-          </div>
-        ) : (
-          <div className="relative w-full h-screen">
-            <img src={imagePreview} alt="Selected Image" className="w-full h-full object-contain" />
-            {
-              !isGrabbing && (
-                <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 flex gap-4">
-                  <button
-                    onClick={handleCancelImage}
-                    className="glass-btn glass-btn-cancel"
-                  >
-                    Cancel & Upload Another
-                  </button>
-                  <Link
-                    to="/"
-                    className="glass-btn glass-btn-home"
-                  >
-                    <Home className="w-5 h-5" />
-                    Go Home
-                  </Link>
-                </div>
-              )
-            }
-            {
-              isGrabbing && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                  <div className="animate-ping absolute w-96 h-96 rounded-full bg-white opacity-75"></div>
-                  <div className="animate-pulse absolute w-64 h-64 rounded-full bg-white opacity-75"></div>
-                  <div className="animate-bounce absolute w-32 h-32 rounded-full bg-white opacity-75"></div>
-                </div>
-              )
-            }
-          </div>
-        )
-      }
-      </div>
-
-      {/* Footer Section */}
-      <footer className="footer-section">
-        <div className="footer-container">
-          {/* About Section */}
-          <section className="about-us-section">
-            <div className="about-container">
-              <div className="about-text">
-                <h3>About DropIt</h3>
-                <p>
-                  DropIt is a revolutionary file-sharing platform powered by gesture recognition technology. 
-                  We enable touchless, high-speed file transfers with real-time tracking and device recognition. 
-                  Experience the future of secure and efficient file sharing.
-                </p>
-              </div>
+          {phase === "countdown" && receiver && (
+            <div className="transfer-status countdown">
+              <div className="countdown-number">{countdown}</div>
+              <p>Sending to <strong>{receiver.username}</strong>…</p>
+              <button type="button" className="transfer-btn danger" onClick={resetTransfer}>
+                <X size={16} /> Cancel
+              </button>
             </div>
-          </section>
+          )}
 
-          {/* Footer Content */}
-          <div className="footer-content">
-            {/* Featured Section */}
-            <div className="footer-column">
-              <h5>Features</h5>
-              <ul className="footer-links">
-                <li><a href="#gesture">Gesture Recognition</a></li>
-                <li><a href="#transfer">High-Speed Transfer</a></li>
-                <li><a href="#tracking">Real-Time Tracking</a></li>
-                <li><a href="#history">Transfer History</a></li>
-                <li><a href="#security">Secure Transfer</a></li>
-              </ul>
+          {(phase === "uploading" || phase === "preparing") && (
+            <div className="transfer-status">
+              <p>{message}</p>
+              <div className="progress"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+              {phase === "uploading" && (
+                <button type="button" className="transfer-btn danger" onClick={resetTransfer}>
+                  <X size={16} /> Stop
+                </button>
+              )}
             </div>
+          )}
 
-            {/* Quick Links */}
-            <div className="footer-column">
-              <h5>Quick Links</h5>
-              <ul className="footer-links">
-                <li><a href="#home">Home</a></li>
-                <li><a href="#upload">Upload Files</a></li>
-                <li><a href="#receive">Receive Files</a></li>
-                <li><a href="#history">History</a></li>
-                <li><a href="#settings">Settings</a></li>
-              </ul>
+          {phase === "sent" && (
+            <div className="transfer-status success">
+              <CheckCircle2 className="status-icon" />
+              <p>{message}</p>
+              <p className="muted">You can cancel it from History until it is dropped.</p>
             </div>
+          )}
 
-            {/* Contact Section */}
-            <div className="footer-column">
-              <h5>Contact Us</h5>
-              <div className="contact-info">
-                <p><strong>Email:</strong> jamilahmed9500@gmail.com</p>
-                <p><strong>Phone:</strong> +88001732856095</p>
-                <p><strong>Address:</strong> PAJAMA TECH , Dhaka City</p>
-              </div>
-            </div>
+          {phase === "error" && message && <div className="transfer-status error"><p>{message}</p></div>}
 
-            {/* Social Links */}
-            <div className="footer-column">
-              <h5>Follow Us</h5>
-              <div className="social-links">
-                <a href="#facebook" className="social-icon">
-                  <img src={facebookImg} alt="Facebook" />
-                </a>
-                <a href="#twitter" className="social-icon">
-                  <img src={twitterImg} alt="Twitter" />
-                </a>
-                <a href="#linkedin" className="social-icon">
-                  <img src={linkedinImg} alt="LinkedIn" />
-                </a>
-                <a href="#instagram" className="social-icon">
-                  <img src={instagramImg} alt="Instagram" />
-                </a>
-              </div>
-            </div>
-          </div>
-
-          {/* Copyright Section */}
-          <div className="footer-copyright">
-            <p>&copy; 2026 DropIt. All Rights Reserved.</p>
+          <div className="transfer-actions">
+            {selected && phase === "idle" && (
+              <button
+                type="button"
+                className="transfer-btn secondary"
+                onClick={() => startSend({ skipCountdown: true })}
+                title="Same transfer without the gesture (useful for comparison tests)"
+              >
+                <Send size={16} /> Send without gesture
+              </button>
+            )}
+            {selected && phase !== "uploading" && (
+              <button type="button" className="transfer-btn" onClick={clearSelection}>
+                {phase === "sent" ? "Send another" : "Choose a different file"}
+              </button>
+            )}
+            {phase === "error" && !selected && (
+              <button type="button" className="transfer-btn" onClick={resetTransfer}>OK</button>
+            )}
+            {phase === "error" && selected && (
+              <button type="button" className="transfer-btn" onClick={resetTransfer}>Try again</button>
+            )}
+            <Link to="/drop" className="transfer-link">Receiving instead? Go to Drop →</Link>
           </div>
         </div>
-      </footer>
-    </>
-  )
-}
+      </div>
 
-export default HomePage
+      <SiteFooter />
+    </>
+  );
+};
+
+export default HomePage;

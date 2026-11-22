@@ -1,0 +1,222 @@
+/* Shared styles for the Send (Home) and Drop pages */
+
+.transfer-card {
+  max-width: 32rem;
+  color: #fff;
+}
+
+.picker-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.home-upload-area.picker {
+  height: 10rem;
+}
+
+.selected-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.preview-media {
+  width: 100%;
+  max-height: 16rem;
+  object-fit: contain;
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.35);
+  margin-bottom: 0.75rem;
+}
+
+.preview-frame {
+  width: 100%;
+  height: 20rem;
+  border: none;
+  border-radius: 0.75rem;
+  background: #fff;
+  margin-bottom: 0.75rem;
+}
+
+.preview-audio {
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  margin-bottom: 1rem;
+  text-align: left;
+}
+
+.file-card-icon {
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  color: #a5f3fc;
+}
+
+.file-card-body {
+  min-width: 0;
+}
+
+.file-card-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-card-meta,
+.file-card-note {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+
+.transfer-status {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.3);
+  text-align: center;
+}
+
+.transfer-status p {
+  margin: 0.25rem 0;
+}
+
+.transfer-status.success {
+  border: 1px solid rgba(16, 185, 129, 0.6);
+}
+
+.transfer-status.error {
+  border: 1px solid rgba(239, 68, 68, 0.7);
+  color: #fecaca;
+}
+
+.transfer-status .status-icon {
+  width: 2rem;
+  height: 2rem;
+  color: #34d399;
+}
+
+.transfer-status.countdown {
+  border: 1px solid rgba(59, 130, 246, 0.7);
+}
+
+.countdown-number {
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.progress {
+  height: 8px;
+  margin: 0.5rem 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.progress > div {
+  height: 100%;
+  background: linear-gradient(to right, #22d3ee, #a855f7);
+  transition: width 0.2s ease;
+}
+
+.transfer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+}
+
+.transfer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 1.1rem;
+  border-radius: 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.transfer-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+
+.transfer-btn.primary {
+  background: linear-gradient(to right, #a855f7, #ec4899);
+  border: none;
+}
+
+.transfer-btn.secondary {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+.transfer-btn.danger {
+  background: rgba(239, 68, 68, 0.45);
+  margin-top: 0.5rem;
+}
+
+.transfer-link {
+  width: 100%;
+  text-align: center;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  text-decoration: underline;
+}
+
+.muted {
+  font-size: 0.85rem;
+  opacity: 0.7;
+  text-align: center;
+}
+
+.inline-icon {
+  display: inline;
+  vertical-align: -3px;
+}
+
+.integrity {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.6rem;
+}
+
+.integrity.ok { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+.integrity.bad { background: rgba(239, 68, 68, 0.25); color: #fecaca; }
+.integrity.skip { background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.75); }
+
+.received-view {
+  max-width: 40rem;
+}
+
+@media (max-width: 480px) {
+  .picker-row {
+    grid-template-columns: 1fr;
+  }
+
+  .home-upload-area.picker {
+    height: 7rem;
+  }
+}

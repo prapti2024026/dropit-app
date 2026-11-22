@@ -89,7 +89,7 @@ const NavBar = ({ isLoggedIn = false, onLogin, onLogout }) => {
             className="nav-link"
             onClick={() => navigate('/home')}
           >
-            Upload
+            Send
           </button>
           <button
             className="nav-link"

@@ -1,258 +1,226 @@
-import { ArrowDown } from "lucide-react";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowDown, Download, ShieldCheck, ShieldAlert, Shield, Inbox } from "lucide-react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 
-import './DropPage.css';
-import SampleVideo from './Sample_video.mp4';
-import facebookImg from './vecteezy_facebook-logo-png-facebook-icon-transparent-white-background_41643208.png';
-import instagramImg from './vecteezy_instagram-logo-png-instagram-icon-transparent_18930413.png';
-import linkedinImg from './vecteezy_linkedin-logo-png-linkedin-icon-transparent-png_18930480.png';
-import twitterImg from './vecteezy_twitter-png-icon_16716486.png';
-import NavBar from '../components/NavBar';
+import "./DropPage.css";
+import "./Transfer.css";
+import SampleVideo from "./Sample_video.mp4";
+import NavBar from "../components/NavBar";
+import SiteFooter from "../components/SiteFooter";
+import GestureDetector from "../components/GestureDetector";
+import FileCard from "../components/FileCard";
+import { API_URL, authHeaders, errorMessage } from "../lib/api";
+import { categoryOf, formatSize, saveBlob, sha256Hex } from "../lib/files";
 
-const DROP_COOLDOWN = 10000;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-const CONFIDENCE_THRESHOLD = 0.7;
+const POLL_MS = 4000;
 
-const DropPage = ({ currentGesture, gestureConfidence, user, onLogout }) => {
-  const [receivedImage, setReceivedImage] = useState(null);
-  const [isDropping, setIsDropping] = useState(false);
-  const [hasDropped, setHasDropped] = useState(false);
+const IntegrityBadge = ({ state }) => {
+  if (state === "verified") {
+    return <span className="integrity ok"><ShieldCheck size={16} /> Integrity verified (SHA-256 match)</span>;
+  }
+  if (state === "mismatch") {
+    return <span className="integrity bad"><ShieldAlert size={16} /> Integrity check FAILED — the file changed in transit</span>;
+  }
+  return <span className="integrity skip"><Shield size={16} /> Integrity not checked here (needs HTTPS and a file under 200 MB)</span>;
+};
 
-  const lastDropTime = useRef(0);
+const DropPage = ({ user, onLogout }) => {
+  const [incoming, setIncoming] = useState({ count: 0, files: [] });
+  // idle -> receiving -> received   (or error)
+  const [phase, setPhase] = useState("idle");
+  const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("");
+  const [received, setReceived] = useState(null); // { meta, blob, url, integrity }
+  const busy = useRef(false);
 
-  // 🔥 GET TOKEN
-  const getToken = () => localStorage.getItem("token");
+  const loadIncoming = useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API_URL}/api/incoming`, { headers: authHeaders() });
+      setIncoming({ count: data.count, files: data.files });
+    } catch {
+      // keep the last known state; a network blip should not clear the inbox
+    }
+  }, []);
 
-  const handleDrop = useCallback(async () => {
-    if (isDropping || hasDropped) return;
+  // Poll for waiting files while the page is open and idle
+  useEffect(() => {
+    if (phase !== "idle") return undefined;
+    // Fetching from the server is syncing with an external system, which is what effects are for
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadIncoming();
+    const timer = setInterval(loadIncoming, POLL_MS);
+    return () => clearInterval(timer);
+  }, [phase, loadIncoming]);
 
-    lastDropTime.current = Date.now();
-    setIsDropping(true);
+  useEffect(() => () => received?.url && URL.revokeObjectURL(received.url), [received]);
+
+  const receive = useCallback(async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setPhase("receiving");
+    setProgress(0);
+    setMessage("Receiving…");
 
     try {
-      const token = getToken();
-      if (!token) {
-        throw new Error('No auth token found. Please login and try again.');
+      const { data } = await axios.post(`${API_URL}/api/drop`, null, { headers: authHeaders() });
+      if (!data.success) {
+        setPhase("idle");
+        setMessage(data.message || "No file is waiting for you");
+        return;
       }
 
-      let receiverId = localStorage.getItem('userId');
+      const meta = data.file;
+      setMessage(`Downloading ${meta.originalName} from ${meta.sender}…`);
+      const response = await axios.get(`${API_URL}/api/files/${meta.id}/download`, {
+        headers: authHeaders(),
+        responseType: "blob",
+        onDownloadProgress: (event) => setProgress(event.total ? event.loaded / event.total : 0)
+      });
 
-      if (!receiverId) {
-        const verifyResponse = await axios.get(`${API_URL}/api/auth/verify`, {
-          headers: {
-            Authorization: token
-          }
-        });
-        receiverId = verifyResponse.data.user?.id;
-        if (receiverId) {
-          localStorage.setItem('userId', receiverId);
-        }
-      }
+      const blob = new Blob([response.data], { type: meta.mimeType || "application/octet-stream" });
+      setMessage("Verifying integrity…");
+      const localHash = await sha256Hex(blob);
+      const integrity = !localHash || !meta.sha256 ? "skipped" : localHash === meta.sha256 ? "verified" : "mismatch";
 
-      if (!receiverId) {
-        throw new Error('Receiver ID not found. Please login again.');
-      }
-
-      const response = await axios.get(
-        `${API_URL}/api/drop/${receiverId}`,
-        {
-          headers: {
-            Authorization: token
-          }
-        }
-      );
-
-      const data = response.data;
-
-      if (data.success && data.imagePath) {
-        console.log(`${API_URL}${data.imagePath}`);
-
-        setTimeout(() => {
-          setReceivedImage(`${API_URL}${data.imagePath}`);
-          setIsDropping(false);
-          setHasDropped(true);
-        }, 1000);
-
-      } else {
-        setTimeout(() => {
-          setIsDropping(false);
-          alert('No image available: ' + data.message);
-        }, 2000);
-      }
-
+      setReceived({ meta, blob, url: URL.createObjectURL(blob), integrity });
+      setPhase("received");
+      setMessage("");
     } catch (error) {
-      console.error(error);
-
-      setTimeout(() => {
-        setIsDropping(false);
-        alert('Drop error: ' + error.message);
-      }, 2000);
+      setPhase("error");
+      setMessage(`Drop failed: ${errorMessage(error)}`);
+    } finally {
+      busy.current = false;
     }
-  }, [isDropping, hasDropped]);
+  }, []);
 
-  useEffect(() => {
-    const timeSinceLastDrop = Date.now() - lastDropTime.current;
+  const handleGestureEvent = useCallback(
+    (type) => {
+      if (type === "drop" && phase === "idle" && incoming.count > 0) receive();
+    },
+    [phase, incoming.count, receive]
+  );
 
-    if (
-      currentGesture === 'drop' &&
-      gestureConfidence > CONFIDENCE_THRESHOLD &&
-      !isDropping &&
-      !hasDropped &&
-      !receivedImage &&
-      timeSinceLastDrop > DROP_COOLDOWN
-    ) {
-      handleDrop();
-    }
-  }, [
-    currentGesture,
-    gestureConfidence,
-    isDropping,
-    hasDropped,
-    receivedImage,
-    handleDrop
-  ]);
+  const close = () => {
+    setReceived(null);
+    setPhase("idle");
+    setMessage("");
+    setProgress(0);
+  };
+
+  const armed = phase === "idle" && incoming.count > 0;
+  const next = incoming.files[0];
+  const kind = received ? categoryOf(received.meta.mimeType, received.meta.originalName) : null;
 
   return (
     <>
       <NavBar isLoggedIn={Boolean(user)} onLogout={onLogout} />
-
       <video className="background-video" autoPlay loop muted playsInline>
         <source src={SampleVideo} type="video/mp4" />
       </video>
-
       <div className="background-overlay"></div>
 
+      <GestureDetector
+        onEvent={handleGestureEvent}
+        armed={armed}
+        armedText="Ready: make a fist, then open your hand to drop."
+        idleText="Nothing waiting yet. The drop gesture is off until a file arrives."
+        hint="DROP = fist → open hand"
+      />
+
       <div className="drop-page-container">
+        {phase !== "received" ? (
+          <div className="drop-page-content transfer-card">
+            <h1 className="drop-page-title">Drop Zone</h1>
 
-        {!receivedImage ? (
-          <div className="drop-page-content">
-
-            {currentGesture === 'drop' ? (
-              <div className="drop-zone-area">
-                <div className="drop-pulse-circle">
-                  <div className="drop-pulse-inner"></div>
-                </div>
-              </div>
-            ) : (
-              <div className="glass-effect-drop">
-                <h1 className="drop-page-title">Drop Zone</h1>
+            {incoming.count > 0 ? (
+              <>
                 <p className="drop-page-subtitle">
-                  Make a <strong>"DROP"</strong> gesture
+                  <Inbox size={18} className="inline-icon" />{" "}
+                  {incoming.count === 1 ? "1 file is" : `${incoming.count} files are`} waiting for you
                 </p>
-
-                <div className="drop-zone-area">
-                  <ArrowDown className="drop-zone-icon" />
-                  <span className="drop-zone-text">
-                    Waiting for drop gesture....
-                  </span>
-                </div>
+                {next && (
+                  <FileCard
+                    name={next.originalName}
+                    size={next.size}
+                    mimeType={next.mimeType}
+                    isFolder={next.isFolder}
+                    note={`From ${next.sender}`}
+                  />
+                )}
+                <p className="drop-page-subtitle">Make a <strong>DROP</strong> gesture to receive it</p>
+              </>
+            ) : (
+              <div className="drop-zone-area">
+                <ArrowDown className="drop-zone-icon" />
+                <span className="drop-zone-text">Waiting for someone to send you a file…</span>
               </div>
             )}
 
+            {phase === "receiving" && (
+              <div className="transfer-status">
+                <p>{message}</p>
+                <div className="progress"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+              </div>
+            )}
+
+            {phase === "error" && (
+              <div className="transfer-status error">
+                <p>{message}</p>
+                <button type="button" className="transfer-btn" onClick={close}>OK</button>
+              </div>
+            )}
+
+            {phase === "idle" && message && <p className="muted">{message}</p>}
+
+            <div className="transfer-actions">
+              {armed && (
+                <button
+                  type="button"
+                  className="transfer-btn secondary"
+                  onClick={receive}
+                  title="Same transfer without the gesture (useful for comparison tests)"
+                >
+                  <Download size={16} /> Receive without gesture
+                </button>
+              )}
+              <Link to="/home" className="transfer-link">Sending instead? Go to Send →</Link>
+            </div>
           </div>
         ) : (
-          <div style={{ position: 'relative', width: '100%', height: '100vh' }}>
+          <div className="drop-page-content transfer-card received-view">
+            <h1 className="drop-page-title">Received</h1>
+            <p className="drop-page-subtitle">From <strong>{received.meta.sender}</strong></p>
 
-            {isDropping && (
-              <div className="drop-dropping-overlay">
-                <div className="drop-animate-ping"></div>
-                <div className="drop-animate-bounce"></div>
-              </div>
-            )}
+            {kind === "image" && <img src={received.url} alt={received.meta.originalName} className="preview-media" />}
+            {kind === "video" && <video src={received.url} className="preview-media" controls playsInline />}
+            {kind === "audio" && <audio src={received.url} controls className="preview-audio" />}
+            {kind === "pdf" && <iframe src={received.url} title={received.meta.originalName} className="preview-frame" />}
 
-            <img
-              src={receivedImage}
-              alt="Received"
-              className="drop-received-image"
+            <FileCard
+              name={received.meta.originalName}
+              size={received.meta.size}
+              mimeType={received.meta.mimeType}
+              isFolder={received.meta.isFolder}
+              note={received.meta.isFolder ? "Folder sent as a zip. Unzip it after saving." : null}
             />
+            <IntegrityBadge state={received.integrity} />
 
-            <button
-              onClick={() => {
-                setReceivedImage(null);
-                setHasDropped(false);
-              }}
-              className="drop-close-btn"
-            >
-              Close
-            </button>
-
+            <div className="transfer-actions">
+              <button
+                type="button"
+                className="transfer-btn primary"
+                onClick={() => saveBlob(received.blob, received.meta.originalName)}
+              >
+                <Download size={16} /> Save {formatSize(received.meta.size)}
+              </button>
+              <button type="button" className="transfer-btn" onClick={close}>Close</button>
+            </div>
           </div>
         )}
-
       </div>
 
-      {/* Footer unchanged */}
-      <footer className="footer-section">
-        <div className="footer-container">
-          <section className="about-us-section">
-            <div className="about-container">
-              <div className="about-text">
-                <h3>About DropIt</h3>
-                <p>
-                  DropIt is a revolutionary file-sharing platform powered by gesture recognition technology.
-                  We enable touchless, high-speed file transfers with real-time tracking and device recognition.
-                  Experience the future of secure and efficient file sharing.
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <div className="footer-content">
-            <div className="footer-column">
-              <h5>Features</h5>
-              <ul className="footer-links">
-                <li><a href="#gesture">Gesture Recognition</a></li>
-                <li><a href="#transfer">High-Speed Transfer</a></li>
-                <li><a href="#history">Transfer History</a></li>
-                <li><a href="#security">Secure Sharing</a></li>
-              </ul>
-            </div>
-
-            <div className="footer-column">
-              <h5>Quick Links</h5>
-              <ul className="footer-links">
-                <li><a href="/">Home</a></li>
-                <li><a href="/home">Upload</a></li>
-                <li><a href="/drop">Drop</a></li>
-                <li><a href="/history">History</a></li>
-              </ul>
-            </div>
-
-            <div className="footer-column">
-              <h5>Contact Us</h5>
-              <div className="contact-info">
-                <p><strong>Email:</strong> jamilahmed9500@gmail.com</p>
-                <p><strong>Phone:</strong> +88001732856095</p>
-                <p><strong>Address:</strong> PAJAMA TECH , Dhaka City</p>
-              </div>
-            </div>
-
-            <div className="footer-column">
-              <h5>Follow Us</h5>
-              <div className="social-links">
-                <a href="#facebook" className="social-icon">
-                  <img src={facebookImg} alt="Facebook" />
-                </a>
-                <a href="#twitter" className="social-icon">
-                  <img src={twitterImg} alt="Twitter" />
-                </a>
-                <a href="#linkedin" className="social-icon">
-                  <img src={linkedinImg} alt="LinkedIn" />
-                </a>
-                <a href="#instagram" className="social-icon">
-                  <img src={instagramImg} alt="Instagram" />
-                </a>
-              </div>
-            </div>
-          </div>
-
-          <div className="footer-copyright">
-            <p>&copy; 2026 DropIt. All Rights Reserved.</p>
-          </div>
-        </div>
-      </footer>
+      <SiteFooter />
     </>
   );
 };

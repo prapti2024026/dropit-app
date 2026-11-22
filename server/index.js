@@ -4,155 +4,243 @@ import multer from "multer";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import Image from "./models/Image.js";
 import File from "./models/File.js";
 import Logout from "./models/Logout.js";
 import User from "./models/User.js";
+import { deleteStored, openFile, saveFile } from "./storage.js";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+// Free MongoDB Atlas has 512 MB in total, so keep single files small there.
+// On paid storage raise these with MAX_FILE_MB / RETENTION_DAYS in .env
+const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 50;
+const MAX_FILE_SIZE = MAX_FILE_MB * 1024 * 1024;
+const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) || 7;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const uploadDir = path.join(__dirname, "uploads"); // only used for files saved by older versions
+
+// ---------- helpers ----------
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const getFileCategory = (mimeType = "", name = "") => {
+  const lower = name.toLowerCase();
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+  if (
+    mimeType.includes("pdf") ||
+    mimeType.includes("document") ||
+    mimeType.includes("word") ||
+    mimeType.includes("sheet") ||
+    mimeType.includes("presentation") ||
+    mimeType.startsWith("text/")
+  ) {
+    return "document";
+  }
+  if (
+    mimeType.includes("zip") ||
+    mimeType.includes("rar") ||
+    mimeType.includes("7z") ||
+    mimeType.includes("tar") ||
+    mimeType.includes("archive") ||
+    /\.(zip|rar|7z|tar|gz)$/.test(lower)
+  ) {
+    return "archive";
+  }
+  return "other";
+};
+
+// SHA-256 of a file on disk, streamed so large files do not fill memory
+const hashFile = (filePath) =>
+  new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    fs.createReadStream(filePath)
+      .on("error", reject)
+      .on("data", (chunk) => hash.update(chunk))
+      .on("end", () => resolve(hash.digest("hex")));
+  });
+
+// Delete the stored bytes only when no history record still points to them
+const removeStoredIfUnused = async (record) => {
+  const remaining = await File.countDocuments({ filename: record.filename });
+  if (remaining === 0) await deleteStored(record, uploadDir);
+};
+
+// Retention: free storage is small, so bytes are removed RETENTION_DAYS after delivery
+// (or after upload, if nobody ever dropped the file). History rows stay, marked expired.
+const cleanupExpired = async () => {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const old = await File.find({
+    transferType: "send",
+    expired: { $ne: true },
+    $or: [
+      { dropped: true, deliveredAt: { $lt: cutoff } },
+      { dropped: { $ne: true }, uploadedAt: { $lt: cutoff } }
+    ]
+  });
+
+  for (const record of old) {
+    await deleteStored(record, uploadDir);
+    await File.updateMany({ filename: record.filename }, { $set: { expired: true } });
+  }
+  if (old.length) console.log(`Retention cleanup: removed ${old.length} old files`);
+};
+
+const publicFile = (file) => ({
+  id: file._id,
+  originalName: file.originalName,
+  mimeType: file.mimeType,
+  size: file.size,
+  fileCategory: file.fileCategory,
+  isFolder: Boolean(file.isFolder),
+  sha256: file.sha256 || null,
+  expired: Boolean(file.expired),
+  uploadedAt: file.uploadedAt
+});
+
+// RFC 5987 header so non-English file names download correctly
+const contentDisposition = (name) => {
+  const asciiFallback = name.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+};
+
+// ---------- server ----------
 
 const startServer = async () => {
   try {
     const mongoUri = process.env.MONGODB_URI;
     const jwtSecret = process.env.JWT_SECRET;
 
-    if (!mongoUri) {
-      throw new Error('MONGODB_URI is not set in server/.env');
-    }
+    if (!mongoUri) throw new Error("MONGODB_URI is not set in server/.env");
+    if (!jwtSecret) throw new Error("JWT_SECRET is not set in server/.env");
 
-    if (!jwtSecret) {
-      throw new Error('JWT_SECRET is not set in server/.env');
-    }
-
-    mongoose.set('bufferCommands', false);
-
-    mongoose.connection.on('connected', () => {
-      console.log('? MongoDB Connected');
-    });
-
-    mongoose.connection.on('error', (err) => {
-      console.error('? MongoDB connection error:', err.message || err);
-    });
+    mongoose.set("bufferCommands", false);
+    mongoose.connection.on("connected", () => console.log("MongoDB connected"));
+    mongoose.connection.on("error", (err) => console.error("MongoDB connection error:", err.message || err));
 
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 10000
     });
 
+    // One-time cleanup for uploads made before the waiting/delivered status existed.
+    // Old versions never marked files as dropped, so without this every old upload
+    // would suddenly appear in the receiver's inbox. (New uploads always have a sha256.)
+    const migrated = await File.updateMany(
+      { transferType: "send", dropped: { $ne: true }, sha256: { $exists: false } },
+      { $set: { dropped: true } }
+    );
+    if (migrated.modifiedCount) {
+      console.log(`Marked ${migrated.modifiedCount} older uploads as delivered`);
+    }
+
+    // Allowed front-end origins. Add more with CLIENT_ORIGIN=a,b,c in .env
     const clientOrigins = [
-      'http://localhost:5174',
-      'http://127.0.0.1:5174',
-      'http://localhost:5175',
-      'http://127.0.0.1:5175',
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      'http://localhost:5176',
-      'http://127.0.0.1:5176',
-      'http://localhost:5177',
-      'http://127.0.0.1:5177',
-      'http://localhost:5178',
-      'http://127.0.0.1:5178',
-      'https://dropit69.netlify.app'
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5174",
+      "http://localhost:5175",
+      "http://127.0.0.1:5175",
+      "http://localhost:5176",
+      "http://127.0.0.1:5176",
+      "http://localhost:5177",
+      "http://127.0.0.1:5177",
+      "http://localhost:5178",
+      "http://127.0.0.1:5178",
+      "http://localhost:4173", // vite preview (PWA testing)
+      "https://dropit69.netlify.app",
+      // Capacitor native app shells (Android / iOS)
+      "capacitor://localhost",
+      "http://localhost",
+      "https://localhost",
+      ...(process.env.CLIENT_ORIGIN || "")
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean)
     ];
 
-    const corsOptions = {
-      origin: clientOrigins,
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      credentials: true,
-      allowedHeaders: ['Content-Type', 'Authorization']
-    };
-
-    app.use(cors(corsOptions));
+    app.use(
+      cors({
+        origin: clientOrigins,
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        credentials: true,
+        allowedHeaders: ["Content-Type", "Authorization"],
+        exposedHeaders: ["Content-Disposition", "Content-Length", "X-File-SHA256", "X-File-Name"]
+      })
+    );
 
     app.use(express.json());
     app.use(express.urlencoded({ extended: true }));
 
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
+    // NOTE: files are NOT served as a static folder.
+    // They can only be fetched through the authenticated download route below.
 
-    const uploadDir = path.join(__dirname, "uploads");
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-
-    app.use("/uploads", express.static(uploadDir));
+    // Health check: used by Render, and by the app to wake a sleeping free server
+    app.get("/api/health", (req, res) => {
+      res.json({ ok: true, maxFileBytes: MAX_FILE_SIZE, retentionDays: RETENTION_DAYS });
+    });
 
     const authenticate = (req, res, next) => {
-      const token = req.headers.authorization;
+      const header = req.headers.authorization || "";
+      const token = header.startsWith("Bearer ") ? header.slice(7) : header;
 
-      if (!token) {
-        return res.status(401).json({ message: "No token provided" });
-      }
+      if (!token) return res.status(401).json({ message: "No token provided" });
 
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, jwtSecret);
         req.userId = decoded.id;
         next();
-      } catch (err) {
+      } catch {
         return res.status(401).json({ message: "Invalid token" });
       }
     };
 
+    // Uploads land in the system temp folder first, then move into MongoDB (GridFS)
     const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        cb(null, uploadDir);
-      },
+      destination: (req, file, cb) => cb(null, os.tmpdir()),
       filename: (req, file, cb) => {
-        const unique = Date.now() + "-" + file.originalname;
-        cb(null, unique);
+        // Random disk name; the real name is kept in the database
+        const ext = path.extname(file.originalname).toLowerCase().replace(/[^.a-z0-9]/g, "").slice(0, 16);
+        cb(null, `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`);
       }
     });
 
     const upload = multer({
       storage,
-      limits: {
-        fileSize: 500 * 1024 * 1024 // 500MB limit
-      }
+      limits: { fileSize: MAX_FILE_SIZE },
+      defParamCharset: "utf8" // keep Bangla and other non-English file names intact
     });
 
-    const getFileCategory = (mimeType) => {
-      if (mimeType.startsWith('image/')) return 'image';
-      if (mimeType.startsWith('video/')) return 'video';
-      if (mimeType.includes('pdf') || mimeType.includes('document') || mimeType.includes('word') || mimeType.includes('sheet')) {
-        return 'document';
-      }
-      if (mimeType.includes('zip') || mimeType.includes('rar') || mimeType.includes('archive')) {
-        return 'archive';
-      }
-      return 'other';
-    };
-
-    const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // ---------- auth ----------
 
     app.post("/api/auth/register", async (req, res) => {
       try {
         const { username, email, password } = req.body;
 
-        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-        if (existingUser) {
-          return res.status(400).json({ error: "User already exists" });
+        if (!username || !email || !password) {
+          return res.status(400).json({ error: "Username, email and password are required" });
         }
+
+        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+        if (existingUser) return res.status(400).json({ error: "User already exists" });
 
         const user = new User({ username, email, password });
         await user.save();
 
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-
-        res.json({
-          token,
-          user: {
-            id: user._id,
-            username: user.username,
-            email: user.email
-          }
-        });
+        const token = jwt.sign({ id: user._id }, jwtSecret, { expiresIn: "7d" });
+        res.json({ token, user: { id: user._id, username: user.username, email: user.email } });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -161,35 +249,23 @@ const startServer = async () => {
     app.post("/api/auth/login", async (req, res) => {
       try {
         const { username, password, usernameOrEmail } = req.body;
-        const identifier = (usernameOrEmail || username || '').trim();
+        const identifier = (usernameOrEmail || username || "").trim();
         const escapedIdentifier = escapeRegex(identifier);
 
         const user = await User.findOne({
           $or: [
-            { username: new RegExp(`^${escapedIdentifier}$`, 'i') },
-            { email: new RegExp(`^${escapedIdentifier}$`, 'i') }
+            { username: new RegExp(`^${escapedIdentifier}$`, "i") },
+            { email: new RegExp(`^${escapedIdentifier}$`, "i") }
           ]
         });
 
-        if (!user) {
-          return res.status(400).json({ error: "Invalid credentials" });
-        }
+        if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
-        const isMatch = await user.comparePassword(password);
-        if (!isMatch) {
-          return res.status(400).json({ error: "Invalid credentials" });
-        }
+        const isMatch = await user.comparePassword(password || "");
+        if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
 
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-
-        res.json({
-          token,
-          user: {
-            id: user._id,
-            username: user.username,
-            email: user.email
-          }
-        });
+        const token = jwt.sign({ id: user._id }, jwtSecret, { expiresIn: "7d" });
+        res.json({ token, user: { id: user._id, username: user.username, email: user.email } });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -199,13 +275,12 @@ const startServer = async () => {
       try {
         const user = await User.findById(req.userId);
         if (user) {
-          const logout = new Logout({
+          await new Logout({
             userId: user._id,
             username: user.username,
             email: user.email,
-            deviceInfo: req.headers['user-agent']
-          });
-          await logout.save();
+            deviceInfo: req.headers["user-agent"]
+          }).save();
         }
         res.json({ message: "Logged out successfully" });
       } catch (error) {
@@ -216,16 +291,8 @@ const startServer = async () => {
     app.get("/api/auth/verify", authenticate, async (req, res) => {
       try {
         const user = await User.findById(req.userId);
-        if (!user) {
-          return res.status(404).json({ error: "User not found" });
-        }
-        res.json({
-          user: {
-            id: user._id,
-            username: user.username,
-            email: user.email
-          }
-        });
+        if (!user) return res.status(404).json({ error: "User not found" });
+        res.json({ user: { id: user._id, username: user.username, email: user.email } });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -233,70 +300,186 @@ const startServer = async () => {
 
     app.get("/api/auth/user/:username", authenticate, async (req, res) => {
       try {
-        const { username } = req.params;
-        const escapedUsername = escapeRegex(username);
+        const escapedUsername = escapeRegex(req.params.username);
         const user = await User.findOne({
           $or: [
-            { username: new RegExp(`^${escapedUsername}$`, 'i') },
-            { email: new RegExp(`^${escapedUsername}$`, 'i') }
+            { username: new RegExp(`^${escapedUsername}$`, "i") },
+            { email: new RegExp(`^${escapedUsername}$`, "i") }
           ]
         });
-        if (!user) {
-          return res.status(404).json({ error: "User not found" });
-        }
-        res.json({
-          user: {
-            id: user._id,
-            username: user.username,
-            email: user.email
-          }
-        });
+        if (!user) return res.status(404).json({ error: "User not found" });
+        res.json({ user: { id: user._id, username: user.username, email: user.email } });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
     });
 
-    app.post("/api/upload", authenticate, upload.single("file"), async (req, res) => {
-      try {
+    // ---------- send (grab) ----------
+
+    app.post("/api/upload", authenticate, (req, res) => {
+      upload.single("file")(req, res, async (uploadError) => {
+        if (uploadError) {
+          const tooBig = uploadError.code === "LIMIT_FILE_SIZE";
+          return res.status(tooBig ? 413 : 400).json({
+            success: false,
+            message: tooBig ? `File is larger than ${MAX_FILE_MB} MB` : uploadError.message
+          });
+        }
+
         if (!req.file) {
           return res.status(400).json({ success: false, message: "No file uploaded" });
         }
 
-        const { type, exchangedWith } = req.body;
-        const filePath = `/uploads/${req.file.filename}`;
-        const fileCategory = getFileCategory(req.file.mimetype);
+        const storedPath = req.file.path; // temporary file
+        const discard = () => fs.existsSync(storedPath) && fs.unlinkSync(storedPath);
 
-        const file = new File({
-          filename: req.file.filename,
-          originalName: req.file.originalname,
-          path: filePath,
-          size: req.file.size,
-          mimeType: req.file.mimetype,
-          userId: req.userId,
-          receiverId: new mongoose.Types.ObjectId(exchangedWith),
-          transferType: type || 'send',
-          fileCategory,
-          exchangedWith
+        try {
+          const { exchangedWith, sha256: clientHash, isFolder } = req.body;
+
+          if (!exchangedWith || !mongoose.Types.ObjectId.isValid(exchangedWith)) {
+            discard();
+            return res.status(400).json({ success: false, message: "A valid receiver is required" });
+          }
+
+          const receiver = await User.findById(exchangedWith).select("_id username");
+          if (!receiver) {
+            discard();
+            return res.status(404).json({ success: false, message: "Receiver not found" });
+          }
+
+          // Integrity: the server's hash is the reference value.
+          // If the browser also sent a hash, they must match, otherwise the upload was corrupted.
+          const serverHash = await hashFile(storedPath);
+          if (clientHash && clientHash.toLowerCase() !== serverHash) {
+            discard();
+            return res.status(422).json({
+              success: false,
+              message: "Integrity check failed: the uploaded file does not match the original. Please try again."
+            });
+          }
+
+          const mimeType = req.file.mimetype || "application/octet-stream";
+          const gridfsId = await saveFile(storedPath, {
+            originalName: req.file.originalname,
+            mimeType,
+            ownerId: req.userId
+          });
+          discard(); // the temporary copy is no longer needed
+
+          const file = await new File({
+            filename: String(gridfsId),
+            gridfsId,
+            originalName: req.file.originalname,
+            size: req.file.size,
+            mimeType,
+            userId: req.userId,
+            receiverId: receiver._id,
+            transferType: "send",
+            fileCategory: getFileCategory(req.file.mimetype, req.file.originalname),
+            exchangedWith: receiver._id.toString(),
+            isFolder: isFolder === "true" || isFolder === true,
+            sha256: serverHash,
+            dropped: false
+          }).save();
+
+          res.json({
+            success: true,
+            message: `Waiting for ${receiver.username} to drop it`,
+            file: { ...publicFile(file), receiver: receiver.username }
+          });
+        } catch (error) {
+          discard();
+          res.status(500).json({ success: false, message: error.message });
+        }
+      });
+    });
+
+    // ---------- receive (drop) ----------
+
+    // Files waiting for the logged-in user. The Drop page polls this to show "incoming file from X".
+    app.get("/api/incoming", authenticate, async (req, res) => {
+      try {
+        const pending = await File.find({
+          receiverId: req.userId,
+          transferType: "send",
+          dropped: false,
+          expired: { $ne: true }
+        })
+          .sort({ uploadedAt: 1 })
+          .populate("userId", "username");
+
+        res.json({
+          count: pending.length,
+          files: pending.map((file) => ({
+            ...publicFile(file),
+            sender: file.userId?.username || "Unknown"
+          }))
         });
-
-        await file.save();
-        res.json({ success: true, message: "File uploaded successfully", file });
       } catch (error) {
         res.status(500).json({ message: error.message });
       }
     });
 
+    // Deliver the oldest waiting file exactly once.
+    const dropHandler = async (req, res) => {
+      try {
+        // Old clients called /api/drop/:receiverId — only allow it for yourself
+        if (req.params.receiverId && req.params.receiverId !== String(req.userId)) {
+          return res.status(403).json({ success: false, message: "You can only receive your own files" });
+        }
+
+        // Atomic: two quick drop gestures can never deliver the same file twice
+        const sent = await File.findOneAndUpdate(
+          { receiverId: req.userId, transferType: "send", dropped: false, expired: { $ne: true } },
+          { $set: { dropped: true, deliveredAt: new Date() } },
+          { sort: { uploadedAt: 1 }, returnDocument: "after" }
+        ).populate("userId", "username");
+
+        if (!sent) {
+          return res.json({ success: false, message: "No file is waiting for you" });
+        }
+
+        const received = await new File({
+          filename: sent.filename,
+          gridfsId: sent.gridfsId,
+          originalName: sent.originalName,
+          path: sent.path,
+          size: sent.size,
+          mimeType: sent.mimeType,
+          userId: req.userId,                // receiver owns this history row
+          receiverId: sent.userId._id,       // partner = sender
+          transferType: "receive",
+          fileCategory: sent.fileCategory,
+          exchangedWith: sent.userId._id.toString(),
+          isFolder: sent.isFolder,
+          sha256: sent.sha256,
+          sourceFileId: sent._id,
+          dropped: true,
+          deliveredAt: sent.deliveredAt
+        }).save();
+
+        res.json({
+          success: true,
+          file: { ...publicFile(received), sender: sent.userId?.username || "Unknown" }
+        });
+      } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+      }
+    };
+
+    app.post("/api/drop", authenticate, dropHandler);
+    app.get("/api/drop", authenticate, dropHandler);
+    app.get("/api/drop/:receiverId", authenticate, dropHandler);
+
+    // ---------- history ----------
+
+    // Each user only sees their own rows: "send" rows they created and "receive" rows they dropped
     app.get("/api/files", authenticate, async (req, res) => {
       try {
-        const files = await File.find({
-          $or: [
-            { userId: req.userId },
-            { receiverId: req.userId }
-          ]
-        })
+        const files = await File.find({ userId: req.userId })
           .sort({ uploadedAt: -1 })
-          .populate('userId', 'username email')
-          .populate('receiverId', 'username email');
+          .populate("userId", "username email")
+          .populate("receiverId", "username email");
 
         res.json({ files });
       } catch (error) {
@@ -304,189 +487,74 @@ const startServer = async () => {
       }
     });
 
-    // 🔥 NEW: Download endpoint with proper authentication
     app.get("/api/files/:fileId/download", authenticate, async (req, res) => {
       try {
         const { fileId } = req.params;
-        console.log('📥 Download request for file:', fileId);
-        console.log('📥 User ID:', req.userId);
+        if (!mongoose.Types.ObjectId.isValid(fileId)) {
+          return res.status(400).json({ message: "Invalid file id" });
+        }
 
-        // Check if user has access to this file
-        const file = await File.findOne({
-          _id: fileId,
-          $or: [
-            { userId: req.userId },
-            { receiverId: req.userId }
-          ]
+        // Only the owner of the history row can download it
+        const file = await File.findOne({ _id: fileId, userId: req.userId });
+        if (!file) return res.status(404).json({ message: "File not found or access denied" });
+
+        const stream = await openFile(file, uploadDir);
+        if (!stream) {
+          return file.expired
+            ? res.status(410).json({ message: `This file was removed ${RETENTION_DAYS} days after delivery to save space` })
+            : res.status(404).json({ message: "File not found on server" });
+        }
+
+        res.setHeader("Content-Type", file.mimeType || "application/octet-stream");
+        res.setHeader("Content-Disposition", contentDisposition(file.originalName));
+        res.setHeader("Content-Length", file.size);
+        res.setHeader("X-File-Name", encodeURIComponent(file.originalName));
+        if (file.sha256) res.setHeader("X-File-SHA256", file.sha256);
+
+        stream.on("error", () => {
+          if (!res.headersSent) res.status(500).json({ message: "Error reading file" });
         });
-
-        if (!file) {
-          console.error('❌ File not found in database or access denied:', fileId);
-          return res.status(404).json({ message: 'File not found or access denied' });
-        }
-
-        console.log('✅ File found:', file.filename);
-        console.log('📍 File path:', file.path);
-
-        // Construct the file path - handle both /uploads/ prefix and raw filename
-        let filePath;
-        if (file.path && file.path.startsWith('/uploads/')) {
-          filePath = path.join(__dirname, file.path);
-        } else if (file.path) {
-          filePath = file.path;
-        } else {
-          filePath = path.join(uploadDir, file.filename);
-        }
-
-        console.log('🔍 Looking for file at:', filePath);
-
-        // Check if file exists
-        if (!fs.existsSync(filePath)) {
-          console.error('❌ File not found on disk:', filePath);
-          console.log('📁 Upload dir contents:', fs.readdirSync(uploadDir).slice(0, 10));
-          return res.status(404).json({ message: 'File not found on server' });
-        }
-
-        console.log('✅ File exists on disk');
-
-        // Get actual file size from disk
-        const stats = fs.statSync(filePath);
-        console.log('📊 File size from disk:', stats.size);
-
-        // Set response headers for download
-        res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
-        res.setHeader('Content-Length', stats.size);
-
-        // Send the file
-        const fileStream = fs.createReadStream(filePath);
-        fileStream.pipe(res);
-
-        fileStream.on('error', (err) => {
-          console.error('❌ File stream error:', err);
-          if (!res.headersSent) {
-            res.status(500).json({ message: 'Error reading file' });
-          }
-        });
+        stream.pipe(res);
       } catch (error) {
-        console.error('❌ Download error:', error);
         res.status(500).json({ message: error.message });
       }
     });
 
-    // 🔥 DEBUG: Check file existence
-    app.get("/api/debug/files", authenticate, async (req, res) => {
-      try {
-        const files = await File.find({ 
-          $or: [
-            { userId: req.userId },
-            { receiverId: req.userId }
-          ]
-        }).limit(5);
-
-        const filesInfo = files.map(f => {
-          const filePath = f.path && f.path.startsWith('/uploads/')
-            ? path.join(__dirname, f.path)
-            : path.join(uploadDir, f.filename);
-          
-          const exists = fs.existsSync(filePath);
-          const stats = exists ? fs.statSync(filePath) : null;
-
-          return {
-            id: f._id,
-            filename: f.filename,
-            originalName: f.originalName,
-            path: f.path,
-            dbSize: f.size,
-            diskPath: filePath,
-            existsOnDisk: exists,
-            actualSize: stats?.size || 0
-          };
-        });
-
-        res.json(filesInfo);
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-
+    // Delete a history row. Deleting a "send" row that is still waiting = cancel the transfer.
     app.delete("/api/files/:id", authenticate, async (req, res) => {
       try {
         const { id } = req.params;
-        const file = await File.findOne({
-          _id: id,
-          $or: [
-            { userId: req.userId },
-            { receiverId: req.userId }
-          ]
-        });
-
-        if (!file) {
-          return res.status(404).json({ message: 'File not found' });
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+          return res.status(400).json({ message: "Invalid file id" });
         }
 
-        const filePath = file.path && file.path.startsWith('/uploads/')
-          ? path.join(__dirname, file.path)
-          : path.join(uploadDir, file.filename);
+        const file = await File.findOne({ _id: id, userId: req.userId });
+        if (!file) return res.status(404).json({ message: "File not found" });
 
-        const fileName = file.filename;
+        const wasPending = file.transferType === "send" && !file.dropped;
 
         await file.deleteOne();
+        await removeStoredIfUnused(file);
 
-        const remaining = await File.countDocuments({ filename: fileName });
-        if (remaining === 0 && fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-
-        res.json({ success: true, message: 'File deleted successfully' });
+        res.json({
+          success: true,
+          message: wasPending ? "Transfer cancelled" : "File deleted successfully"
+        });
       } catch (error) {
         res.status(500).json({ message: error.message });
       }
     });
 
-    app.get("/api/drop/:receiverId", authenticate, async (req, res) => {
-      try {
-        const { receiverId } = req.params;
-        const file = await File.findOne({ receiverId: new mongoose.Types.ObjectId(receiverId), transferType: 'send' }).sort({ uploadedAt: -1 });
-        if (!file) {
-          return res.json({ success: false, message: "No file available" });
-        }
-
-        const imagePath = file.path && file.path.startsWith("/uploads/")
-          ? file.path
-          : `/uploads/${file.filename}`;
-
-        // 🔥 CREATE A HISTORY RECORD WHEN IMAGE IS RECEIVED
-        try {
-          const receivedFile = new File({
-            filename: file.filename,
-            originalName: file.originalName,
-            path: file.path,
-            size: file.size,
-            mimeType: file.mimeType,
-            userId: new mongoose.Types.ObjectId(receiverId), // receiver becomes the user in history
-            receiverId: file.userId, // sender becomes the receiver field
-            transferType: 'receive', // mark as received
-            fileCategory: file.fileCategory,
-            exchangedWith: file.userId.toString(),
-            uploadedAt: new Date()
-          });
-          await receivedFile.save();
-        } catch (historyError) {
-          console.log('Note: Could not save receive history, but image was delivered:', historyError.message);
-        }
-
-        res.json({ success: true, imagePath });
-      } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-      }
-    });
+    cleanupExpired().catch((error) => console.error("Retention cleanup failed:", error.message));
+    setInterval(() => {
+      cleanupExpired().catch((error) => console.error("Retention cleanup failed:", error.message));
+    }, 60 * 60 * 1000);
 
     app.listen(PORT, () => {
-      console.log(`?? Server running on http://localhost:${PORT}`);
+      console.log(`Server running on port ${PORT} (max file ${MAX_FILE_MB} MB, kept ${RETENTION_DAYS} days)`);
     });
   } catch (err) {
-    console.error("? DB Error:", err.message || err);
+    console.error("Startup error:", err.message || err);
     process.exit(1);
   }
 };

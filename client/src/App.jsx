@@ -5,16 +5,15 @@ import HomePage from "./pages/HomePage";
 import DropPage from "./pages/DropPage";
 import HistoryPage from "./pages/HistoryPage";
 import FirstPage from "./pages/FirstPage";
-import GestureDetector from "./components/GestureDetector";
 
 import { useState, useEffect } from "react";
 import "./pages/FirstPage.css";
 
+// The camera + gesture detector now lives inside the Send (/home) and Drop (/drop) pages,
+// so the camera is only on while one of those pages is open.
 const AppContent = ({
-  currentGesture,
-  gestureConfidence,
-  handleGesture,
   user,
+  authReady,
   handleLogin,
   handleLogout
 }) => {
@@ -22,6 +21,9 @@ const AppContent = ({
   const location = useLocation();
 
   useEffect(() => {
+    // Wait for the saved login to be checked, so reloading /drop or /history keeps you there
+    if (!authReady) return;
+
     if (user && location.pathname === '/') {
       navigate('/home', { replace: true });
       return;
@@ -37,12 +39,12 @@ const AppContent = ({
     if (!validRoutes.includes(location.pathname)) {
       navigate('/', { replace: true });
     }
-  }, [location, navigate, user]);
+  }, [location, navigate, user, authReady]);
+
+  if (!authReady) return null;
 
   return (
     <>
-      <GestureDetector onGesture={handleGesture} />
-
       <Routes>
         {/* Public route */}
         <Route
@@ -56,8 +58,6 @@ const AppContent = ({
           element={
             user ? (
               <HomePage
-                currentGesture={currentGesture}
-                gestureConfidence={gestureConfidence}
                 user={user}
                 onLogout={handleLogout}
               />
@@ -72,8 +72,6 @@ const AppContent = ({
           element={
             user ? (
               <DropPage
-                currentGesture={currentGesture}
-                gestureConfidence={gestureConfidence}
                 user={user}
                 onLogout={handleLogout}
               />
@@ -107,16 +105,11 @@ const AppContent = ({
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const App = () => {
-  const [currentGesture, setCurrentGesture] = useState(null);
-  const [gestureConfidence, setGestureConfidence] = useState(0);
-
   const [user, setUser] = useState(null);
-
-  const handleGesture = (gesture, confidence) => {
-    const normalizedGesture = gesture?.toString().trim().toLowerCase();
-    setCurrentGesture(normalizedGesture);
-    setGestureConfidence(confidence);
-  };
+  // Ready immediately when there is no saved login; otherwise after /api/auth/verify answers
+  const [authReady, setAuthReady] = useState(
+    () => !(localStorage.getItem('token') && localStorage.getItem('userId'))
+  );
 
   const handleLogin = (userData) => {
     setUser(userData);
@@ -156,6 +149,8 @@ const App = () => {
       } catch {
         localStorage.removeItem('token');
         localStorage.removeItem('userId');
+      } finally {
+        setAuthReady(true);
       }
     };
 
@@ -165,10 +160,8 @@ const App = () => {
   return (
     <BrowserRouter>
       <AppContent
-        currentGesture={currentGesture}
-        gestureConfidence={gestureConfidence}
-        handleGesture={handleGesture}
         user={user}
+        authReady={authReady}
         handleLogin={handleLogin}
         handleLogout={handleLogout}
       />

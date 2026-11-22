@@ -7,11 +7,15 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "node scripts/prepare-mediapipe.mjs",
+    "test:gestures": "node --test src/lib/gestures.test.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.2.3",
     "@tailwindcss/vite": "^4.1.18",
     "axios": "^1.15.0",
+    "jszip": "^3.10.2",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

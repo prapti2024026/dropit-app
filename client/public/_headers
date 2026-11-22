@@ -1,0 +1,5 @@
+# Netlify: always check for a new service worker so app updates reach installed PWAs
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache

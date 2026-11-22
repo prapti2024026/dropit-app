@@ -582,3 +582,9 @@
     gap: 1rem;
   }
 }
+
+.status-badge.failed {
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}

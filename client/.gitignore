@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Created by scripts/prepare-mediapipe.mjs on npm install
+public/mediapipe/
+public/models/gesture_recognizer.task

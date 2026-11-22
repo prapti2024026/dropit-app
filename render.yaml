@@ -1,0 +1,25 @@
+# Render Blueprint for the DropIt server.
+# Render dashboard -> New -> Blueprint -> pick this repository.
+services:
+  - type: web
+    name: dropit-server
+    runtime: node
+    plan: free
+    region: singapore          # closest Render region to Bangladesh
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: MONGODB_URI
+        sync: false            # paste the MongoDB Atlas connection string when asked
+      - key: JWT_SECRET
+        generateValue: true    # Render creates a long random secret
+      - key: CLIENT_ORIGIN
+        value: https://dropit69.netlify.app
+      - key: MAX_FILE_MB
+        value: "50"
+      - key: RETENTION_DAYS
+        value: "7"

@@ -26,8 +26,15 @@ userSchema.methods.comparePassword = function(candidatePassword) {
         resolve(isMatch);
       });
     } else {
-      // Plain text password (for existing users)
-      resolve(candidatePassword === this.password);
+      // Legacy account saved before hashing was added.
+      // If the password matches, hash it now so it is never stored in plain text again.
+      const isMatch = candidatePassword === this.password;
+      if (!isMatch) return resolve(false);
+
+      this.password = candidatePassword; // pre('save') hook hashes it
+      this.save()
+        .then(() => resolve(true))
+        .catch(reject);
     }
   });
 };
