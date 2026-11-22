@@ -18,7 +18,7 @@ services:
       - key: JWT_SECRET
         generateValue: true    # Render creates a long random secret
       - key: CLIENT_ORIGIN
-        value: https://dropit69.netlify.app
+        value: https://dropit-gesture.netlify.app
       - key: MAX_FILE_MB
         value: "50"
       - key: RETENTION_DAYS

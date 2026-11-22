@@ -160,6 +160,7 @@ const startServer = async () => {
       "http://localhost:5178",
       "http://127.0.0.1:5178",
       "http://localhost:4173", // vite preview (PWA testing)
+      "https://dropit-gesture.netlify.app",
       "https://dropit69.netlify.app",
       // Capacitor native app shells (Android / iOS)
       "capacitor://localhost",
