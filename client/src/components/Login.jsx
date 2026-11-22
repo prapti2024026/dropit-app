@@ -20,8 +20,19 @@ const Login = ({ isOpen, onClose, onLogin }) => {
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
+  const [loading, setLoading] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
+
+    setErrorMsg('');
+    setLoading(true);
+    setSlow(false);
+    // The free server sleeps after 15 min idle; tell the user if it is waking up
+    const slowTimer = setTimeout(() => setSlow(true), 4000);
 
     try {
       const endpoint = isSignUp
@@ -29,9 +40,13 @@ const Login = ({ isOpen, onClose, onLogin }) => {
         : '/api/auth/login';
 
       const payload = isSignUp
-        ? formData
+        ? {
+            username: formData.username.trim(),
+            email: formData.email.trim().toLowerCase(),
+            password: formData.password
+          }
         : {
-            usernameOrEmail: formData.username,
+            usernameOrEmail: formData.username.trim(),
             password: formData.password
           };
 
@@ -41,7 +56,8 @@ const Login = ({ isOpen, onClose, onLogin }) => {
         {
           headers: {
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 90000
         }
       );
 
@@ -56,17 +72,36 @@ const Login = ({ isOpen, onClose, onLogin }) => {
 
     } catch (error) {
       console.error('Login/register error:', error);
-      const message =
+      let message =
         error.response?.data?.message ||
-        error.response?.data?.error ||
-        error.message ||
-        'Error occurred';
-      alert(message);
+        error.response?.data?.error;
+      if (!message) {
+        message = error.code === 'ECONNABORTED'
+          ? 'Server did not respond. Please try again in a minute.'
+          : 'Cannot reach the server. Check your internet and try again.';
+      }
+      if (message === 'Invalid credentials') {
+        message = 'Wrong username/email or password. New here? Create an account first.';
+      }
+      setErrorMsg(message);
+    } finally {
+      clearTimeout(slowTimer);
+      setLoading(false);
+      setSlow(false);
     }
   };
 
-  const handleSignUpClick = () => setIsSignUp(true);
-  const handleSignInClick = () => setIsSignUp(false);
+  const status = (
+    <>
+      {loading && slow && (
+        <p className="login-status">Server is waking up, this can take up to a minute...</p>
+      )}
+      {errorMsg && <p className="login-error" role="alert">{errorMsg}</p>}
+    </>
+  );
+
+  const handleSignUpClick = () => { setIsSignUp(true); setErrorMsg(''); };
+  const handleSignInClick = () => { setIsSignUp(false); setErrorMsg(''); };
 
   // Prevent body scroll
   useEffect(() => {
@@ -106,6 +141,8 @@ const Login = ({ isOpen, onClose, onLogin }) => {
                   type="text"
                   name="username"
                   placeholder="Email or Username"
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={formData.username}
                   onChange={handleChange}
                   required
@@ -120,11 +157,21 @@ const Login = ({ isOpen, onClose, onLogin }) => {
                   placeholder="Password"
                   value={formData.password}
                   onChange={handleChange}
+                  autoComplete="current-password"
                   required
                 />
               </div>
 
-              <button type="submit">Sign In</button>
+              <button type="submit" disabled={loading}>
+                {loading && !isSignUp ? 'Please wait...' : 'Sign In'}
+              </button>
+              {!isSignUp && status}
+              <p className="login-switch">
+                No account?{' '}
+                <button type="button" className="link-btn" onClick={handleSignUpClick}>
+                  Create one
+                </button>
+              </p>
             </form>
           </div>
 
@@ -141,6 +188,8 @@ const Login = ({ isOpen, onClose, onLogin }) => {
                   type="text"
                   name="username"
                   placeholder="Username"
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={formData.username}
                   onChange={handleChange}
                   required
@@ -167,11 +216,22 @@ const Login = ({ isOpen, onClose, onLogin }) => {
                   placeholder="Password"
                   value={formData.password}
                   onChange={handleChange}
+                  autoComplete="new-password"
+                  minLength={4}
                   required
                 />
               </div>
 
-              <button type="submit">Sign Up</button>
+              <button type="submit" disabled={loading}>
+                {loading && isSignUp ? 'Please wait...' : 'Sign Up'}
+              </button>
+              {isSignUp && status}
+              <p className="login-switch">
+                Already have an account?{' '}
+                <button type="button" className="link-btn" onClick={handleSignInClick}>
+                  Sign in
+                </button>
+              </p>
             </form>
           </div>
 
