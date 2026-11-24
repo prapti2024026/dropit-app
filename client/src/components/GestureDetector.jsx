@@ -55,7 +55,19 @@ const LABEL_TEXT = { fist: "Fist", open: "Open hand", none: "No hand" };
  *  - onStable(state, votes)    the smoothed hand state, for on-screen feedback
  * `armed` only changes what the preview shows; the pages decide whether an event does anything.
  */
-const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText }) => {
+// Steps shown under the camera for the gesture the page is waiting for
+const STEPS = {
+  grab: [
+    { state: "open", text: "Open hand" },
+    { state: "fist", text: "Close fist" }
+  ],
+  drop: [
+    { state: "fist", text: "Make a fist" },
+    { state: "open", text: "Open hand" }
+  ]
+};
+
+const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText, target = "grab" }) => {
   const videoRef = useRef(null);
   const onEventRef = useRef(onEvent);
   const onStableRef = useRef(onStable);
@@ -67,6 +79,7 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText }
   const [perf, setPerf] = useState({ fps: 0, ms: 0 });
   const [collapsed, setCollapsed] = useState(false);
   const [flash, setFlash] = useState(null);
+  const [primed, setPrimed] = useState(null);
 
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -88,7 +101,8 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText }
 
         // Camera first, so the user sees themselves while the model loads
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+          // A small frame is plenty for one hand and keeps inference fast on phones
+          video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 360 }, frameRate: { ideal: 30 } },
           audio: false
         });
         if (cancelled) {
@@ -112,6 +126,7 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText }
         let msTotal = 0;
         let windowStart = performance.now();
         let lastStable = "none";
+        let lastPrimed = null;
 
         const loop = () => {
           if (cancelled) return;
@@ -137,6 +152,10 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText }
           if (state.stable !== lastStable) {
             lastStable = state.stable;
             setStable(state.stable);
+          }
+          if (state.primed !== lastPrimed) {
+            lastPrimed = state.primed;
+            setPrimed(state.primed);
           }
           onStableRef.current?.(state.stable, state.votes);
 
@@ -205,6 +224,22 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText }
           <div className="gesture-votes" title="How many recent frames agree">
             <div style={{ width: `${Math.round(votes * 100)}%` }} />
           </div>
+          {armed && (
+            <ol className="gesture-steps" aria-label="Gesture steps">
+              {STEPS[target].map((step, index) => {
+                const first = index === 0;
+                // Step 1 is done once the first hand state is seen; then step 2 is the one to do
+                const done = first && primed === target;
+                const active = first ? primed !== target : primed === target;
+                return (
+                  <li key={step.state} className={`${done ? "done" : ""} ${active ? "active" : ""}`}>
+                    <span className="gesture-step-num">{done ? "✓" : index + 1}</span>
+                    {step.text}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
           <p className={`gesture-line ${armed ? "gesture-ready" : ""}`}>{armed ? armedText : idleText}</p>
           {hint && <p className="gesture-hint">{hint}</p>}
         </>

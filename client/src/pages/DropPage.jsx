@@ -13,7 +13,7 @@ import FileCard from "../components/FileCard";
 import { API_URL, authHeaders, errorMessage } from "../lib/api";
 import { categoryOf, formatSize, saveBlob, sha256Hex } from "../lib/files";
 
-const POLL_MS = 4000;
+const POLL_MS = 3000;
 
 const IntegrityBadge = ({ state }) => {
   if (state === "verified") {
@@ -66,7 +66,8 @@ const DropPage = ({ user, onLogout }) => {
       const { data } = await axios.post(`${API_URL}/api/drop`, null, { headers: authHeaders() });
       if (!data.success) {
         setPhase("idle");
-        setMessage(data.message || "No file is waiting for you");
+        setMessage("Nothing is waiting for you yet. Ask the sender to GRAB first.");
+        loadIncoming();
         return;
       }
 
@@ -92,13 +93,15 @@ const DropPage = ({ user, onLogout }) => {
     } finally {
       busy.current = false;
     }
-  }, []);
+  }, [loadIncoming]);
 
+  // The drop gesture always asks the server directly, so it works even if the
+  // file arrived after the last inbox check
   const handleGestureEvent = useCallback(
     (type) => {
-      if (type === "drop" && phase === "idle" && incoming.count > 0) receive();
+      if (type === "drop" && phase === "idle") receive();
     },
-    [phase, incoming.count, receive]
+    [phase, receive]
   );
 
   const close = () => {
@@ -108,7 +111,7 @@ const DropPage = ({ user, onLogout }) => {
     setProgress(0);
   };
 
-  const armed = phase === "idle" && incoming.count > 0;
+  const armed = phase === "idle";
   const next = incoming.files[0];
   const kind = received ? categoryOf(received.meta.mimeType, received.meta.originalName) : null;
 
@@ -123,9 +126,14 @@ const DropPage = ({ user, onLogout }) => {
       <GestureDetector
         onEvent={handleGestureEvent}
         armed={armed}
-        armedText="Ready: make a fist, then open your hand to drop."
-        idleText="Nothing waiting yet. The drop gesture is off until a file arrives."
+        armedText={
+          incoming.count > 0
+            ? "A file is waiting: make a fist, then open your hand."
+            : "Make a fist, then open your hand to receive."
+        }
+        idleText="Receiving…"
         hint="DROP = fist → open hand"
+        target="drop"
       />
 
       <div className="drop-page-container">
@@ -174,7 +182,7 @@ const DropPage = ({ user, onLogout }) => {
             {phase === "idle" && message && <p className="muted">{message}</p>}
 
             <div className="transfer-actions">
-              {armed && (
+              {armed && incoming.count > 0 && (
                 <button
                   type="button"
                   className="transfer-btn secondary"

@@ -19,3 +19,15 @@ export const errorMessage = (error, fallback = "Something went wrong") =>
 export const wakeServer = () => {
   fetch(`${API_URL}/api/health`).catch(() => {});
 };
+
+// While someone has DropIt open, ping every 5 minutes so the free server never falls asleep
+// in the middle of a session (it sleeps after 15 idle minutes).
+export const keepServerAwake = () => {
+  wakeServer();
+  setInterval(() => {
+    if (document.visibilityState === "visible") wakeServer();
+  }, 5 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") wakeServer();
+  });
+};

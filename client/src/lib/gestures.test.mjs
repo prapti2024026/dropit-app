@@ -1,17 +1,16 @@
 // Run with:  npm run test:gestures
-// Checks the voting + transition rules that decide when a grab or drop fires.
+// Checks the smoothing + transition rules that decide when a grab or drop fires.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GestureStateMachine, mapLabel } from "./gestures.js";
 
-const FPS = 30;
 const repeat = (label, count) => Array(count).fill(label);
 
-const run = (sequence) => {
+const run = (sequence, fps = 30) => {
   const machine = new GestureStateMachine();
   const events = [];
   sequence.forEach((label, index) => {
-    const result = machine.push(label, (index * 1000) / FPS);
+    const result = machine.push(label, (index * 1000) / fps);
     if (result.event) events.push(result.event);
   });
   return events;
@@ -25,6 +24,24 @@ test("fist then open hand is a drop", () => {
   assert.deepEqual(run([...repeat("fist", 20), ...repeat("open", 20)]), ["drop"]);
 });
 
+test("a quick grab (0.3 s open, 0.3 s fist) fires on the first try", () => {
+  assert.deepEqual(run([...repeat("open", 9), ...repeat("fist", 9)]), ["grab"]);
+});
+
+test("works the same on a slow phone camera (8 fps)", () => {
+  assert.deepEqual(run([...repeat("open", 3), ...repeat("fist", 3)], 8), ["grab"]);
+  assert.deepEqual(run([...repeat("fist", 3), ...repeat("open", 3)], 8), ["drop"]);
+});
+
+test("motion blur ('no hand' frames) while closing the hand is tolerated", () => {
+  const seq = [...repeat("open", 10), "none", "none", "fist", "none", "none", "none", ...repeat("fist", 10)];
+  assert.deepEqual(run(seq), ["grab"]);
+});
+
+test("a hand appearing as a fist straight away does not grab", () => {
+  assert.deepEqual(run([...repeat("none", 30), ...repeat("fist", 60)]), []);
+});
+
 test("a hand resting open never fires", () => {
   assert.deepEqual(run(repeat("open", 300)), []);
 });
@@ -35,6 +52,19 @@ test("flickering labels never fire", () => {
 
 test("a long pause between open and fist does not count", () => {
   assert.deepEqual(run([...repeat("open", 20), ...repeat("none", 80), ...repeat("fist", 20)]), []);
+});
+
+test("a grab does not immediately count as a drop when the hand relaxes", () => {
+  assert.deepEqual(run([...repeat("open", 15), ...repeat("fist", 15), ...repeat("open", 30)]), ["grab"]);
+});
+
+test("primed tells the UI which step comes next", () => {
+  const machine = new GestureStateMachine();
+  let state;
+  for (let i = 0; i < 10; i += 1) state = machine.push("open", i * 33);
+  assert.equal(state.primed, "grab");
+  for (let i = 10; i < 20; i += 1) state = machine.push("fist", i * 33);
+  assert.equal(state.event === "grab" || state.stable === "fist", true);
 });
 
 test("labels are mapped and low scores ignored", () => {

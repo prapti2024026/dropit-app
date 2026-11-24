@@ -150,3 +150,48 @@
     font-size: 12px;
   }
 }
+
+/* Two-step guide: which hand shape to show next */
+.gesture-steps {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.gesture-steps li {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.65);
+  transition: background 0.15s, color 0.15s;
+}
+
+.gesture-steps li.active {
+  background: rgba(99, 102, 241, 0.35);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(129, 140, 248, 0.8);
+}
+
+.gesture-steps li.done {
+  background: rgba(34, 197, 94, 0.22);
+  color: #bbf7d0;
+}
+
+.gesture-step-num {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}

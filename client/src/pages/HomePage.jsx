@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, FolderUp, Send, X, CheckCircle2 } from "lucide-react";
+import { Upload, FolderUp, Send, X, CheckCircle2, UserCheck, UserX, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 
@@ -14,7 +14,7 @@ import { API_URL, authHeaders, errorMessage } from "../lib/api";
 import { MAX_UPLOAD_BYTES, categoryOf, formatSize, sha256Hex, zipFolder } from "../lib/files";
 
 // Seconds between the grab gesture and the actual upload, so a wrong grab can be cancelled
-const SEND_CONFIRM_SECONDS = 3;
+const SEND_CONFIRM_SECONDS = 2;
 
 const HomePage = ({ user, onLogout }) => {
   const [selected, setSelected] = useState(null); // { file, isFolder, folderName, count, previewUrl }
@@ -29,6 +29,41 @@ const HomePage = ({ user, onLogout }) => {
 
   const countdownTimer = useRef(null);
   const uploadAbort = useRef(null);
+  const hashJob = useRef(null); // { file, promise } so the SHA-256 is ready before the grab
+
+  // Look the receiver up while typing, so the grab can start sending at once
+  const [lookup, setLookup] = useState({ state: "idle", name: "", user: null }); // idle | checking | found | missing
+
+  useEffect(() => {
+    const name = receiverUsername.trim();
+    if (!name) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLookup({ state: "idle", name: "", user: null });
+      return undefined;
+    }
+    setLookup({ state: "checking", name, user: null });
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const { data } = await axios.get(`${API_URL}/api/auth/user/${encodeURIComponent(name)}`, {
+          headers: authHeaders(),
+          signal: controller.signal
+        });
+        setLookup({ state: "found", name, user: { id: data.user.id, username: data.user.username } });
+      } catch (error) {
+        if (axios.isCancel(error)) return;
+        setLookup({ state: error?.response?.status === 404 ? "missing" : "idle", name, user: null });
+      }
+    }, 450);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [receiverUsername]);
+
+  const startHash = (file) => {
+    hashJob.current = { file, promise: sha256Hex(file).catch(() => null) };
+  };
 
   // Free the preview's object URL when the selection changes or the page closes
   useEffect(() => () => selected?.previewUrl && URL.revokeObjectURL(selected.previewUrl), [selected]);
@@ -62,6 +97,7 @@ const HomePage = ({ user, onLogout }) => {
     const kind = categoryOf(file.type, file.name);
     const previewUrl = kind === "image" || kind === "video" ? URL.createObjectURL(file) : null;
     setSelected({ file, isFolder: false, previewUrl });
+    startHash(file);
   };
 
   const pickFolder = async (event) => {
@@ -79,6 +115,7 @@ const HomePage = ({ user, onLogout }) => {
         return;
       }
       setSelected({ file: zipped.file, isFolder: true, folderName: zipped.folderName, count: zipped.count });
+      startHash(zipped.file);
       setPhase("idle");
       setMessage("");
       setProgress(0);
@@ -96,7 +133,8 @@ const HomePage = ({ user, onLogout }) => {
       setMessage("Checking file integrity…");
 
       try {
-        const hash = await sha256Hex(selected.file);
+        const job = hashJob.current?.file === selected.file ? hashJob.current.promise : sha256Hex(selected.file);
+        const hash = await job;
         const form = new FormData();
         form.append("file", selected.file);
         form.append("exchangedWith", target.id);
@@ -136,13 +174,16 @@ const HomePage = ({ user, onLogout }) => {
         return;
       }
 
-      setPhase("preparing");
-      setMessage("Finding receiver…");
       try {
-        const { data } = await axios.get(`${API_URL}/api/auth/user/${encodeURIComponent(name)}`, {
-          headers: authHeaders()
-        });
-        const target = { id: data.user.id, username: data.user.username };
+        let target = lookup.state === "found" && lookup.name === name ? lookup.user : null;
+        if (!target) {
+          setPhase("preparing");
+          setMessage("Finding receiver…");
+          const { data } = await axios.get(`${API_URL}/api/auth/user/${encodeURIComponent(name)}`, {
+            headers: authHeaders()
+          });
+          target = { id: data.user.id, username: data.user.username };
+        }
         setReceiver(target);
 
         if (skipCountdown) {
@@ -171,7 +212,7 @@ const HomePage = ({ user, onLogout }) => {
         );
       }
     },
-    [selected, phase, receiverUsername, upload]
+    [selected, phase, receiverUsername, upload, lookup]
   );
 
   const handleGestureEvent = useCallback(
@@ -181,7 +222,7 @@ const HomePage = ({ user, onLogout }) => {
     [startSend]
   );
 
-  const armed = Boolean(selected && receiverUsername.trim() && phase === "idle");
+  const armed = Boolean(selected && receiverUsername.trim() && lookup.state !== "missing" && phase === "idle");
   const kind = selected ? categoryOf(selected.file.type, selected.file.name) : null;
   const previewUrl = selected?.previewUrl;
 
@@ -197,8 +238,15 @@ const HomePage = ({ user, onLogout }) => {
         onEvent={handleGestureEvent}
         armed={armed}
         armedText="Ready: open your hand, then close it into a fist to send."
-        idleText={!selected ? "Pick a file or folder to arm the grab gesture." : "Enter a receiver to arm the grab gesture."}
+        idleText={
+          !selected
+            ? "Pick a file or folder to arm the grab gesture."
+            : lookup.state === "missing"
+              ? "That receiver does not exist. Check the username."
+              : "Enter a receiver to arm the grab gesture."
+        }
         hint="GRAB = open hand → fist"
+        target="grab"
       />
 
       <div className="home-page-container">
@@ -219,7 +267,15 @@ const HomePage = ({ user, onLogout }) => {
               className="receiver-input"
               disabled={phase !== "idle" && phase !== "error"}
               autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
             />
+            <p className={`receiver-status ${lookup.state}`} aria-live="polite">
+              {lookup.state === "checking" && (<><Loader2 size={14} className="spin" /> Checking…</>)}
+              {lookup.state === "found" && (<><UserCheck size={14} /> {lookup.user.username} found</>)}
+              {lookup.state === "missing" && (<><UserX size={14} /> No user with that username or email</>)}
+            </p>
           </div>
 
           {!selected ? (

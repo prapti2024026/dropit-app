@@ -19,6 +19,8 @@ services:
         generateValue: true    # Render creates a long random secret
       - key: CLIENT_ORIGIN
         value: https://dropit-gesture.netlify.app
+      - key: GOOGLE_CLIENT_ID
+        sync: false
       - key: MAX_FILE_MB
         value: "50"
       - key: RETENTION_DAYS

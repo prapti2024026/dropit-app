@@ -14,6 +14,17 @@ import File from "./models/File.js";
 import Logout from "./models/Logout.js";
 import User from "./models/User.js";
 import { deleteStored, openFile, saveFile } from "./storage.js";
+import {
+  createRateLimiter,
+  generateUsername,
+  googleClientId,
+  normalizeEmail,
+  normalizeUsername,
+  validateEmail,
+  validatePassword,
+  validateUsername,
+  verifyGoogleCredential
+} from "./auth.js";
 
 dotenv.config();
 
@@ -175,14 +186,18 @@ const startServer = async () => {
     app.use(
       cors({
         origin: clientOrigins,
-        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         credentials: true,
         allowedHeaders: ["Content-Type", "Authorization"],
-        exposedHeaders: ["Content-Disposition", "Content-Length", "X-File-SHA256", "X-File-Name"]
+        exposedHeaders: ["Content-Disposition", "Content-Length", "X-File-SHA256", "X-File-Name"],
+        // Browsers may reuse the CORS pre-check for 2 hours instead of asking before every request
+        maxAge: 7200
       })
     );
 
-    app.use(express.json());
+    // Render sits behind a proxy; this makes req.ip the real visitor address (used by the rate limiter)
+    app.set("trust proxy", 1);
+    app.use(express.json({ limit: "100kb" }));
     app.use(express.urlencoded({ extended: true }));
 
     // NOTE: files are NOT served as a static folder.
@@ -226,23 +241,66 @@ const startServer = async () => {
 
     // ---------- auth ----------
 
+    const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
+    const signupLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
+
+    const issueToken = (user) => jwt.sign({ id: user._id }, jwtSecret, { expiresIn: "7d" });
+
+    const sendSession = async (res, user, extra = {}) => {
+      user.lastLoginAt = new Date();
+      await user.save();
+      res.json({ token: issueToken(user), user: user.toPublic(), ...extra });
+    };
+
+    // Public settings the sign-in screen needs (the Google client ID is not a secret)
+    app.get("/api/auth/config", (req, res) => {
+      res.json({ googleClientId: googleClientId() || null });
+    });
+
+    // Live "is this username free?" check for the sign-up form
+    app.get("/api/auth/username-available", async (req, res) => {
+      const username = normalizeUsername(req.query.u);
+      const problem = validateUsername(username);
+      if (problem) return res.json({ available: false, reason: problem });
+      const taken = await User.exists({ username: new RegExp(`^${escapeRegex(username)}$`, "i") });
+      res.json({ available: !taken, reason: taken ? "This username is taken" : null });
+    });
+
     app.post("/api/auth/register", async (req, res) => {
       try {
-        const { username, email, password } = req.body;
+        const wait = signupLimiter.check(req.ip);
+        if (wait) return res.status(429).json({ error: `Too many sign-ups from this network. Try again in ${Math.ceil(wait / 60)} min.` });
 
-        if (!username || !email || !password) {
-          return res.status(400).json({ error: "Username, email and password are required" });
+        const username = normalizeUsername(req.body.username);
+        const email = normalizeEmail(req.body.email);
+        const { password } = req.body;
+
+        const problem =
+          validateUsername(username) || validateEmail(email) || validatePassword(password, { username, email });
+        if (problem) return res.status(400).json({ error: problem });
+
+        const existing = await User.findOne({
+          $or: [
+            { email: new RegExp(`^${escapeRegex(email)}$`, "i") },
+            { username: new RegExp(`^${escapeRegex(username)}$`, "i") }
+          ]
+        });
+        if (existing) {
+          const sameEmail = existing.email.toLowerCase() === email;
+          return res.status(409).json({
+            error: sameEmail
+              ? existing.googleId
+                ? "This email already has an account. Use \"Continue with Google\"."
+                : "This email already has an account. Sign in instead."
+              : "This username is taken"
+          });
         }
 
-        const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-        if (existingUser) return res.status(400).json({ error: "User already exists" });
-
-        const user = new User({ username, email, password });
-        await user.save();
-
-        const token = jwt.sign({ id: user._id }, jwtSecret, { expiresIn: "7d" });
-        res.json({ token, user: { id: user._id, username: user.username, email: user.email } });
+        signupLimiter.fail(req.ip);
+        const user = new User({ username, email, password, authProvider: "local" });
+        await sendSession(res, user);
       } catch (error) {
+        if (error?.code === 11000) return res.status(409).json({ error: "Username or email is already in use" });
         res.status(500).json({ error: error.message });
       }
     });
@@ -250,9 +308,16 @@ const startServer = async () => {
     app.post("/api/auth/login", async (req, res) => {
       try {
         const { username, password, usernameOrEmail } = req.body;
-        const identifier = (usernameOrEmail || username || "").trim();
-        const escapedIdentifier = escapeRegex(identifier);
+        const identifier = String(usernameOrEmail || username || "").trim();
+        if (!identifier || !password) return res.status(400).json({ error: "Enter your username or email and password" });
 
+        const key = `${req.ip}|${identifier.toLowerCase()}`;
+        const wait = loginLimiter.check(key);
+        if (wait) {
+          return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} min.` });
+        }
+
+        const escapedIdentifier = escapeRegex(identifier);
         const user = await User.findOne({
           $or: [
             { username: new RegExp(`^${escapedIdentifier}$`, "i") },
@@ -260,14 +325,76 @@ const startServer = async () => {
           ]
         });
 
-        if (!user) return res.status(400).json({ error: "Invalid credentials" });
+        if (user && !user.password && user.googleId) {
+          return res.status(400).json({ error: "This account uses Google. Click \"Continue with Google\"." });
+        }
 
-        const isMatch = await user.comparePassword(password || "");
-        if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
+        const isMatch = user ? await user.comparePassword(String(password)) : false;
+        if (!isMatch) {
+          loginLimiter.fail(key);
+          return res.status(400).json({ error: "Invalid credentials" });
+        }
 
-        const token = jwt.sign({ id: user._id }, jwtSecret, { expiresIn: "7d" });
-        res.json({ token, user: { id: user._id, username: user.username, email: user.email } });
+        loginLimiter.clear(key);
+        await sendSession(res, user);
       } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Sign in or sign up with a Google account (the browser sends Google's signed ID token)
+    app.post("/api/auth/google", async (req, res) => {
+      try {
+        const profile = await verifyGoogleCredential(req.body.credential);
+
+        let user = await User.findOne({ googleId: profile.googleId });
+        let isNew = false;
+
+        if (!user) {
+          user = await User.findOne({ email: new RegExp(`^${escapeRegex(profile.email)}$`, "i") });
+          if (user) {
+            // Google proved this person owns the email, so link it to the existing account
+            user.googleId = profile.googleId;
+          } else {
+            isNew = true;
+            user = new User({
+              username: await generateUsername(User, profile.email, profile.name),
+              email: profile.email,
+              googleId: profile.googleId,
+              authProvider: "google"
+            });
+          }
+        }
+
+        user.emailVerified = true;
+        if (profile.name) user.name = profile.name;
+        if (profile.avatar) user.avatar = profile.avatar;
+        await sendSession(res, user, { isNew });
+      } catch (error) {
+        res.status(error.status || 500).json({ error: error.message });
+      }
+    });
+
+    // Change your public username (used right after a Google sign-up)
+    app.patch("/api/auth/me", authenticate, async (req, res) => {
+      try {
+        const username = normalizeUsername(req.body.username);
+        const problem = validateUsername(username);
+        if (problem) return res.status(400).json({ error: problem });
+
+        const taken = await User.exists({
+          _id: { $ne: req.userId },
+          username: new RegExp(`^${escapeRegex(username)}$`, "i")
+        });
+        if (taken) return res.status(409).json({ error: "This username is taken" });
+
+        const user = await User.findById(req.userId);
+        if (!user) return res.status(404).json({ error: "User not found" });
+        user.username = username;
+        await user.save();
+        res.json({ user: user.toPublic() });
+      } catch (error) {
+        if (error?.code === 11000) return res.status(409).json({ error: "This username is taken" });
         res.status(500).json({ error: error.message });
       }
     });
@@ -293,7 +420,7 @@ const startServer = async () => {
       try {
         const user = await User.findById(req.userId);
         if (!user) return res.status(404).json({ error: "User not found" });
-        res.json({ user: { id: user._id, username: user.username, email: user.email } });
+        res.json({ user: user.toPublic() });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -309,7 +436,8 @@ const startServer = async () => {
           ]
         });
         if (!user) return res.status(404).json({ error: "User not found" });
-        res.json({ user: { id: user._id, username: user.username, email: user.email } });
+        // Only public fields: never show another person's email
+        res.json({ user: { id: user._id, username: user.username, name: user.name || null, avatar: user.avatar || null } });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
