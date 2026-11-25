@@ -552,6 +552,18 @@ const Login = ({ isOpen, onClose, onLogin, initialMode = "signin" }) => {
             )}
           </>
         )}
+
+        <p className="auth-legal">
+          By continuing you agree to the{" "}
+          <a href="/terms.html" target="_blank" rel="noopener noreferrer">
+            Terms
+          </a>{" "}
+          and{" "}
+          <a href="/privacy.html" target="_blank" rel="noopener noreferrer">
+            Privacy Policy
+          </a>
+          .
+        </p>
       </div>
     </div>
   );
