@@ -2,7 +2,7 @@
 // It only caches the app's own files. API calls (a different origin) and the
 // MediaPipe model download are never intercepted, so transfers always go to the network.
 
-const VERSION = "dropit-v1";
+const VERSION = "dropit-v2"; // bump when cached files (icons) change
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {
