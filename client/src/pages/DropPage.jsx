@@ -1,102 +1,206 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowDown, Download, ShieldCheck, ShieldAlert, Shield, Inbox } from "lucide-react";
 import { Link } from "react-router-dom";
 import axios from "axios";
+import {
+  ArrowLeft,
+  ArrowDownToLine,
+  Cloud,
+  Download,
+  Hand,
+  Inbox,
+  Loader2,
+  PackageCheck,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  X,
+  Zap
+} from "lucide-react";
 
-import "./DropPage.css";
 import "./Transfer.css";
-import SampleVideo from "./Sample_video.mp4";
 import NavBar from "../components/NavBar";
 import SiteFooter from "../components/SiteFooter";
 import GestureDetector from "../components/GestureDetector";
 import FileCard from "../components/FileCard";
 import { API_URL, authHeaders, errorMessage } from "../lib/api";
 import { categoryOf, formatSize, saveBlob, sha256Hex } from "../lib/files";
+import { directInbox, receiveDirect } from "../lib/p2p";
 
 const POLL_MS = 3000;
 
 const IntegrityBadge = ({ state }) => {
   if (state === "verified") {
-    return <span className="integrity ok"><ShieldCheck size={16} /> Integrity verified (SHA-256 match)</span>;
+    return (
+      <span className="integrity ok">
+        <ShieldCheck size={18} /> Verified: SHA-256 fingerprint matches the sender's
+      </span>
+    );
   }
   if (state === "mismatch") {
-    return <span className="integrity bad"><ShieldAlert size={16} /> Integrity check FAILED — the file changed in transit</span>;
+    return (
+      <span className="integrity bad">
+        <ShieldAlert size={18} /> Check FAILED: the file changed on the way. Ask for it again.
+      </span>
+    );
   }
-  return <span className="integrity skip"><Shield size={16} /> Integrity not checked here (needs HTTPS and a file under 200 MB)</span>;
+  return (
+    <span className="integrity skip">
+      <Shield size={18} /> Fingerprint not checked on this device
+    </span>
+  );
 };
 
+// One inbox for both routes, oldest first
+const mergeInbox = (serverFiles, directTransfers) =>
+  [
+    ...serverFiles.map((file) => ({
+      key: `s-${file.id}`,
+      route: "server",
+      name: file.originalName,
+      size: file.size,
+      mimeType: file.mimeType,
+      isFolder: file.isFolder,
+      sender: file.sender,
+      at: new Date(file.uploadedAt).getTime()
+    })),
+    ...directTransfers.map((transfer) => ({
+      key: `d-${transfer.id}`,
+      id: transfer.id,
+      route: "direct",
+      name: transfer.name,
+      size: transfer.size,
+      mimeType: transfer.mimeType,
+      isFolder: transfer.isFolder,
+      sender: transfer.sender,
+      at: new Date(transfer.createdAt).getTime()
+    }))
+  ].sort((a, b) => a.at - b.at);
+
 const DropPage = ({ user, onLogout }) => {
-  const [incoming, setIncoming] = useState({ count: 0, files: [] });
-  // idle -> receiving -> received   (or error)
+  const [inbox, setInbox] = useState([]);
+  // idle → receiving (server) | connecting/streaming/verifying (direct) → received   (or error)
   const [phase, setPhase] = useState("idle");
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
   const [message, setMessage] = useState("");
   const [received, setReceived] = useState(null); // { meta, blob, url, integrity }
   const busy = useRef(false);
 
-  const loadIncoming = useCallback(async () => {
-    try {
-      const { data } = await axios.get(`${API_URL}/api/incoming`, { headers: authHeaders() });
-      setIncoming({ count: data.count, files: data.files });
-    } catch {
-      // keep the last known state; a network blip should not clear the inbox
-    }
+  const loadInbox = useCallback(async () => {
+    const [server, direct] = await Promise.allSettled([
+      axios.get(`${API_URL}/api/incoming`, { headers: authHeaders() }).then((r) => r.data.files || []),
+      directInbox().then((d) => d.transfers || [])
+    ]);
+    // Keep the last known list on a network blip
+    if (server.status === "rejected" && direct.status === "rejected") return;
+    setInbox(mergeInbox(server.value || [], direct.value || []));
   }, []);
 
-  // Poll for waiting files while the page is open and idle
   useEffect(() => {
     if (phase !== "idle") return undefined;
-    // Fetching from the server is syncing with an external system, which is what effects are for
+    // Polling the server is syncing with an external system, which is what effects are for
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadIncoming();
-    const timer = setInterval(loadIncoming, POLL_MS);
+    loadInbox();
+    const timer = setInterval(loadInbox, POLL_MS);
     return () => clearInterval(timer);
-  }, [phase, loadIncoming]);
+  }, [phase, loadInbox]);
 
   useEffect(() => () => received?.url && URL.revokeObjectURL(received.url), [received]);
 
-  const receive = useCallback(async () => {
-    if (busy.current) return;
-    busy.current = true;
+  // A direct transfer streams into this tab: warn before closing it mid-way
+  const streaming = ["connecting", "streaming", "verifying"].includes(phase);
+  useEffect(() => {
+    if (!streaming) return undefined;
+    const warn = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [streaming]);
+
+  const receiveFromServer = async () => {
     setPhase("receiving");
-    setProgress(0);
     setMessage("Receiving…");
+    const { data } = await axios.post(`${API_URL}/api/drop`, null, { headers: authHeaders() });
+    if (!data.success) return false;
 
-    try {
-      const { data } = await axios.post(`${API_URL}/api/drop`, null, { headers: authHeaders() });
-      if (!data.success) {
-        setPhase("idle");
-        setMessage("Nothing is waiting for you yet. Ask the sender to GRAB first.");
-        loadIncoming();
-        return;
+    const meta = data.file;
+    setMessage(`Downloading ${meta.originalName} from ${meta.sender}…`);
+    const started = performance.now();
+    const response = await axios.get(`${API_URL}/api/files/${meta.id}/download`, {
+      headers: authHeaders(),
+      responseType: "blob",
+      onDownloadProgress: (event) => {
+        const total = event.total || meta.size;
+        const seconds = Math.max(0.001, (performance.now() - started) / 1000);
+        const bytesPerSecond = event.loaded / seconds;
+        setProgress({
+          ratio: total ? event.loaded / total : 0,
+          bytesPerSecond,
+          secondsLeft: bytesPerSecond ? (total - event.loaded) / bytesPerSecond : null
+        });
       }
+    });
+    const blob = new Blob([response.data], { type: meta.mimeType || "application/octet-stream" });
+    setPhase("verifying");
+    setMessage("Checking the SHA-256 fingerprint…");
+    const localHash = await sha256Hex(blob);
+    const integrity = !localHash || !meta.sha256 ? "skipped" : localHash === meta.sha256 ? "verified" : "mismatch";
+    setReceived({ meta: { ...meta, route: "server" }, blob, url: URL.createObjectURL(blob), integrity });
+    return true;
+  };
 
-      const meta = data.file;
-      setMessage(`Downloading ${meta.originalName} from ${meta.sender}…`);
-      const response = await axios.get(`${API_URL}/api/files/${meta.id}/download`, {
-        headers: authHeaders(),
-        responseType: "blob",
-        onDownloadProgress: (event) => setProgress(event.total ? event.loaded / event.total : 0)
-      });
+  const receiveStraight = async (id) => {
+    setPhase("connecting");
+    setMessage("Connecting directly to the sender…");
+    const outcome = await receiveDirect({
+      id,
+      onStatus: (stage, transfer) => {
+        if (stage === "receiving") {
+          setPhase("streaming");
+          setMessage(`Receiving ${transfer.name} straight from ${transfer.sender}…`);
+        }
+        if (stage === "verifying") {
+          setPhase("verifying");
+          setMessage("Checking the SHA-256 fingerprint…");
+        }
+      },
+      onProgress: (p) => setProgress(p)
+    });
+    if (!outcome) return false;
+    setReceived({ ...outcome, meta: { ...outcome.meta, route: "direct" }, url: URL.createObjectURL(outcome.blob) });
+    return true;
+  };
 
-      const blob = new Blob([response.data], { type: meta.mimeType || "application/octet-stream" });
-      setMessage("Verifying integrity…");
-      const localHash = await sha256Hex(blob);
-      const integrity = !localHash || !meta.sha256 ? "skipped" : localHash === meta.sha256 ? "verified" : "mismatch";
+  const receive = useCallback(
+    async (item) => {
+      if (busy.current) return;
+      busy.current = true;
+      setProgress({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
+      try {
+        // The drop always asks the server, so it also works for files that arrived after the last check
+        const next = item || inbox[0];
+        let ok = next?.route === "direct" ? await receiveStraight(next.id) : await receiveFromServer();
+        if (!ok && !next) ok = await receiveStraight(); // maybe a direct transfer just arrived
+        if (ok) {
+          setPhase("received");
+          setMessage("");
+        } else {
+          setPhase("idle");
+          setMessage("Nothing is waiting for you yet. Ask the sender to GRAB first.");
+          loadInbox();
+        }
+      } catch (error) {
+        setPhase("error");
+        setMessage(`Receive failed: ${errorMessage(error)}`);
+      } finally {
+        busy.current = false;
+      }
+    },
+    // receiveFromServer / receiveStraight only use state setters
+    [inbox, loadInbox]
+  );
 
-      setReceived({ meta, blob, url: URL.createObjectURL(blob), integrity });
-      setPhase("received");
-      setMessage("");
-    } catch (error) {
-      setPhase("error");
-      setMessage(`Drop failed: ${errorMessage(error)}`);
-    } finally {
-      busy.current = false;
-    }
-  }, [loadIncoming]);
-
-  // The drop gesture always asks the server directly, so it works even if the
-  // file arrived after the last inbox check
   const handleGestureEvent = useCallback(
     (type) => {
       if (type === "drop" && phase === "idle") receive();
@@ -108,125 +212,196 @@ const DropPage = ({ user, onLogout }) => {
     setReceived(null);
     setPhase("idle");
     setMessage("");
-    setProgress(0);
+    setProgress({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
   };
 
   const armed = phase === "idle";
-  const next = incoming.files[0];
   const kind = received ? categoryOf(received.meta.mimeType, received.meta.originalName) : null;
+  const percent = Math.round(progress.ratio * 100);
 
   return (
     <>
-      <NavBar isLoggedIn={Boolean(user)} onLogout={onLogout} />
-      <video className="background-video" autoPlay loop muted playsInline>
-        <source src={SampleVideo} type="video/mp4" />
-      </video>
-      <div className="background-overlay"></div>
+      <NavBar user={user} onLogout={onLogout} />
 
-      <GestureDetector
-        onEvent={handleGestureEvent}
-        armed={armed}
-        armedText={
-          incoming.count > 0
-            ? "A file is waiting: make a fist, then open your hand."
-            : "Make a fist, then open your hand to receive."
-        }
-        idleText="Receiving…"
-        hint="DROP = fist → open hand"
-        target="drop"
-      />
+      <main className="app-page">
+        <div className="page-head">
+          <span className="icon-tile drop">
+            <Inbox />
+          </span>
+          <div>
+            <h1>Receive</h1>
+            <p>Files sent to you wait here. Make a fist, then open your hand to DROP the next one.</p>
+          </div>
+        </div>
 
-      <div className="drop-page-container">
-        {phase !== "received" ? (
-          <div className="drop-page-content transfer-card">
-            <h1 className="drop-page-title">Drop Zone</h1>
+        <div className="app-grid">
+          <div>
+            {phase !== "received" ? (
+              <section className="card">
+                <h2 className="card-title">
+                  <span className="step-badge drop">
+                    <Inbox size={14} />
+                  </span>
+                  Waiting for you
+                </h2>
 
-            {incoming.count > 0 ? (
-              <>
-                <p className="drop-page-subtitle">
-                  <Inbox size={18} className="inline-icon" />{" "}
-                  {incoming.count === 1 ? "1 file is" : `${incoming.count} files are`} waiting for you
-                </p>
-                {next && (
-                  <FileCard
-                    name={next.originalName}
-                    size={next.size}
-                    mimeType={next.mimeType}
-                    isFolder={next.isFolder}
-                    note={`From ${next.sender}`}
-                  />
+                {inbox.length > 0 ? (
+                  <ul className="inbox">
+                    {inbox.map((item, index) => (
+                      <li key={item.key} className={`inbox-item ${index === 0 ? "next" : ""}`}>
+                        <FileCard
+                          name={item.name}
+                          size={item.size}
+                          mimeType={item.mimeType}
+                          isFolder={item.isFolder}
+                          note={`From ${item.sender}${index === 0 ? " · next to drop" : ""}`}
+                          badge={
+                            item.route === "direct" ? (
+                              <span className="chip direct" title="The sender is online and will stream it to you">
+                                <Zap size={13} /> Direct
+                              </span>
+                            ) : (
+                              <span className="chip server" title="Stored on the server until you drop it">
+                                <Cloud size={13} /> Server
+                              </span>
+                            )
+                          }
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="drop-target">
+                    <span className="icon-tile drop">
+                      <ArrowDownToLine />
+                    </span>
+                    <strong>Nothing here yet</strong>
+                    <span className="muted">
+                      When someone sends you a file it shows up here within a few seconds. Keep this page open.
+                    </span>
+                  </div>
                 )}
-                <p className="drop-page-subtitle">Make a <strong>DROP</strong> gesture to receive it</p>
-              </>
+
+                {phase === "idle" && message && <p className="muted" style={{ marginTop: 14 }}>{message}</p>}
+
+                {["receiving", "connecting", "streaming", "verifying"].includes(phase) && (
+                  <div className="status">
+                    <div className="status-head">
+                      <span className="icon-tile drop">
+                        <Loader2 className="spin" />
+                      </span>
+                      <span>{message}</span>
+                    </div>
+                    <div className={`progress drop ${phase === "connecting" || phase === "verifying" ? "indeterminate" : ""}`}>
+                      <div style={{ width: `${percent}%` }} />
+                    </div>
+                    {(phase === "receiving" || phase === "streaming") && (
+                      <div className="progress-meta">
+                        <span>{percent}%</span>
+                        <span>
+                          {progress.bytesPerSecond ? `${formatSize(progress.bytesPerSecond)}/s` : ""}
+                          {progress.secondsLeft != null && Number.isFinite(progress.secondsLeft)
+                            ? ` · ${Math.max(1, Math.round(progress.secondsLeft))} s left`
+                            : ""}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {phase === "error" && (
+                  <div className="status error" role="alert">
+                    {message}
+                    <div className="actions">
+                      <button type="button" className="btn btn-sm" onClick={close}>
+                        OK
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="actions">
+                  {armed && inbox.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-drop btn-big"
+                      onClick={() => receive()}
+                      title="Same transfer without the gesture (useful for comparison tests)"
+                    >
+                      <Download size={18} /> Receive without gesture
+                    </button>
+                  )}
+                </div>
+              </section>
             ) : (
-              <div className="drop-zone-area">
-                <ArrowDown className="drop-zone-icon" />
-                <span className="drop-zone-text">Waiting for someone to send you a file…</span>
-              </div>
+              <section className="card">
+                <div className="status-head" style={{ marginBottom: 16 }}>
+                  <span className="icon-tile leaf">
+                    <PackageCheck />
+                  </span>
+                  <div>
+                    <h2 className="card-title" style={{ margin: 0 }}>
+                      Received from {received.meta.sender}
+                    </h2>
+                    <p className="muted">
+                      {received.meta.route === "direct" ? "Sent directly, device to device" : "Delivered through the server"}
+                    </p>
+                  </div>
+                </div>
+
+                {kind === "image" && <img src={received.url} alt={received.meta.originalName} className="preview-media" />}
+                {kind === "video" && <video src={received.url} className="preview-media" controls playsInline />}
+                {kind === "audio" && <audio src={received.url} controls className="preview-audio" />}
+                {kind === "pdf" && <iframe src={received.url} title={received.meta.originalName} className="preview-frame" />}
+
+                <FileCard
+                  name={received.meta.originalName}
+                  size={received.meta.size}
+                  mimeType={received.meta.mimeType}
+                  isFolder={received.meta.isFolder}
+                  note={received.meta.isFolder ? "Folder sent as a zip. Unzip it after saving." : null}
+                />
+                <IntegrityBadge state={received.integrity} />
+
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="btn btn-drop btn-big"
+                    onClick={() => saveBlob(received.blob, received.meta.originalName)}
+                  >
+                    <Download size={18} /> Save to this device ({formatSize(received.meta.size)})
+                  </button>
+                  <button type="button" className="btn" onClick={close}>
+                    <X size={16} /> Close
+                  </button>
+                </div>
+              </section>
             )}
 
-            {phase === "receiving" && (
-              <div className="transfer-status">
-                <p>{message}</p>
-                <div className="progress"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
-              </div>
-            )}
-
-            {phase === "error" && (
-              <div className="transfer-status error">
-                <p>{message}</p>
-                <button type="button" className="transfer-btn" onClick={close}>OK</button>
-              </div>
-            )}
-
-            {phase === "idle" && message && <p className="muted">{message}</p>}
-
-            <div className="transfer-actions">
-              {armed && incoming.count > 0 && (
-                <button
-                  type="button"
-                  className="transfer-btn secondary"
-                  onClick={receive}
-                  title="Same transfer without the gesture (useful for comparison tests)"
-                >
-                  <Download size={16} /> Receive without gesture
-                </button>
-              )}
-              <Link to="/home" className="transfer-link">Sending instead? Go to Send →</Link>
-            </div>
+            <Link to="/home" className="text-link">
+              <ArrowLeft size={16} /> Sending instead? Open Send
+            </Link>
           </div>
-        ) : (
-          <div className="drop-page-content transfer-card received-view">
-            <h1 className="drop-page-title">Received</h1>
-            <p className="drop-page-subtitle">From <strong>{received.meta.sender}</strong></p>
 
-            {kind === "image" && <img src={received.url} alt={received.meta.originalName} className="preview-media" />}
-            {kind === "video" && <video src={received.url} className="preview-media" controls playsInline />}
-            {kind === "audio" && <audio src={received.url} controls className="preview-audio" />}
-            {kind === "pdf" && <iframe src={received.url} title={received.meta.originalName} className="preview-frame" />}
-
-            <FileCard
-              name={received.meta.originalName}
-              size={received.meta.size}
-              mimeType={received.meta.mimeType}
-              isFolder={received.meta.isFolder}
-              note={received.meta.isFolder ? "Folder sent as a zip. Unzip it after saving." : null}
+          <div className="camera-column">
+            <GestureDetector
+              onEvent={handleGestureEvent}
+              armed={armed}
+              target="drop"
+              hint="DROP = make a fist, then open your hand"
+              armedText={
+                inbox.length > 0
+                  ? `${inbox[0].name} is waiting. Make a fist, then open your hand.`
+                  : "Make a fist, then open your hand to receive."
+              }
+              idleText={phase === "received" ? "Save or close the file to drop the next one." : "Receiving…"}
             />
-            <IntegrityBadge state={received.integrity} />
-
-            <div className="transfer-actions">
-              <button
-                type="button"
-                className="transfer-btn primary"
-                onClick={() => saveBlob(received.blob, received.meta.originalName)}
-              >
-                <Download size={16} /> Save {formatSize(received.meta.size)}
-              </button>
-              <button type="button" className="transfer-btn" onClick={close}>Close</button>
-            </div>
+            <p className="muted" style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
+              <Hand size={16} /> Your video stays on this device. Only the hand shape is used.
+            </p>
           </div>
-        )}
-      </div>
+        </div>
+      </main>
 
       <SiteFooter />
     </>

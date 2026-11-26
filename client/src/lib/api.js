@@ -16,8 +16,26 @@ export const errorMessage = (error, fallback = "Something went wrong") =>
 
 // Free hosting puts the server to sleep after ~15 idle minutes and the first request
 // can take up to a minute. Pinging it as soon as the app opens hides most of that wait.
+// The health reply also carries the server's real upload limit, so the site never
+// sends a file through the server that the server would refuse.
+let serverLimits = null;
+const limitListeners = new Set();
+
 export const wakeServer = () => {
-  fetch(`${API_URL}/api/health`).catch(() => {});
+  fetch(`${API_URL}/api/health`)
+    .then((response) => (response.ok ? response.json() : null))
+    .then((health) => {
+      if (!health?.maxFileBytes) return;
+      serverLimits = { maxFileBytes: health.maxFileBytes, retentionDays: health.retentionDays };
+      limitListeners.forEach((listener) => listener(serverLimits));
+    })
+    .catch(() => {});
+};
+
+export const getServerLimits = () => serverLimits;
+export const onServerLimits = (listener) => {
+  limitListeners.add(listener);
+  return () => limitListeners.delete(listener);
 };
 
 // While someone has DropIt open, ping every 5 minutes so the free server never falls asleep

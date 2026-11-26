@@ -1,14 +1,14 @@
 /* DropIt sign-in / sign-up dialog */
 .auth-overlay {
-  --auth-bg: #12121a;
-  --auth-surface: #1b1b26;
-  --auth-border: rgba(255, 255, 255, 0.1);
-  --auth-text: #f4f4f7;
-  --auth-muted: #a1a1b5;
-  --auth-accent: #e11d48;
-  --auth-accent-2: #f97316;
-  --auth-ok: #22c55e;
-  --auth-bad: #f87171;
+  --auth-bg: var(--deep, #151a3a);
+  --auth-surface: var(--night, #0d1026);
+  --auth-border: var(--rim, #2a3168);
+  --auth-text: var(--snow, #f2f3ff);
+  --auth-muted: var(--mist, #a7aedd);
+  --auth-accent: var(--grab, #ff6b4a);
+  --auth-accent-2: var(--grab-2, #ff9a5a);
+  --auth-ok: var(--ok, #4ade80);
+  --auth-bad: var(--bad, #fb7185);
 
   position: fixed;
   inset: 0;
@@ -22,7 +22,7 @@
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   animation: auth-fade 0.2s ease-out;
-  font-family: "Ubuntu", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-body);
 }
 
 @keyframes auth-fade {
@@ -87,6 +87,7 @@
 }
 
 .auth-card h2 {
+  font-family: var(--font-display);
   margin: 0 0 6px;
   font-size: 24px;
   font-weight: 700;
@@ -128,7 +129,7 @@
 }
 
 .auth-tabs button.active {
-  background: #2a2a38;
+  background: var(--deep-2, #1c2250);
   color: var(--auth-text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
@@ -206,7 +207,7 @@
 
 .auth-input:focus-within {
   border-color: var(--auth-accent);
-  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.2);
+  box-shadow: 0 0 0 3px rgba(255, 107, 74, 0.2);
   color: var(--auth-text);
 }
 
@@ -276,7 +277,7 @@
 .auth-meter span {
   height: 5px;
   border-radius: 3px;
-  background: #2a2a38;
+  background: var(--deep-2, #1c2250);
   transition: background 0.2s;
 }
 
@@ -344,7 +345,7 @@
   border: none;
   border-radius: 11px;
   background: linear-gradient(135deg, var(--auth-accent), var(--auth-accent-2));
-  color: #fff;
+  color: #2a0d05;
   font: inherit;
   font-size: 15px;
   font-weight: 700;
@@ -367,7 +368,7 @@
   padding: 0;
   border: none;
   background: none;
-  color: #fb7185;
+  color: var(--grab-2, #ff9a5a);
   font: inherit;
   font-weight: 700;
   cursor: pointer;

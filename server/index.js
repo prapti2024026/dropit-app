@@ -13,7 +13,7 @@ import { fileURLToPath } from "url";
 import File from "./models/File.js";
 import Logout from "./models/Logout.js";
 import User from "./models/User.js";
-import { deleteStored, openFile, saveFile } from "./storage.js";
+import { deleteStored, openFile, saveFile, storedBytes } from "./storage.js";
 import {
   createRateLimiter,
   generateUsername,
@@ -25,16 +25,20 @@ import {
   validateUsername,
   verifyGoogleCredential
 } from "./auth.js";
+import { createP2PRouter } from "./p2p.js";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-// Free MongoDB Atlas has 512 MB in total, so keep single files small there.
-// On paid storage raise these with MAX_FILE_MB / RETENTION_DAYS in .env
-const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 50;
+// Free MongoDB Atlas has 512 MB in total. Single files may be up to MAX_FILE_MB; to make room,
+// delivered files are removed after DELIVERED_KEEP_HOURS and undelivered ones after RETENTION_DAYS.
+// STORAGE_BUDGET_MB is how much of the database files may use (the rest is for accounts and history).
+const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 200;
 const MAX_FILE_SIZE = MAX_FILE_MB * 1024 * 1024;
 const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) || 7;
+const DELIVERED_KEEP_HOURS = Number(process.env.DELIVERED_KEEP_HOURS) || 24;
+const STORAGE_BUDGET_BYTES = (Number(process.env.STORAGE_BUDGET_MB) || 440) * 1024 * 1024;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,24 +92,44 @@ const removeStoredIfUnused = async (record) => {
   if (remaining === 0) await deleteStored(record, uploadDir);
 };
 
-// Retention: free storage is small, so bytes are removed RETENTION_DAYS after delivery
-// (or after upload, if nobody ever dropped the file). History rows stay, marked expired.
+const expireRecord = async (record) => {
+  await deleteStored(record, uploadDir);
+  await File.updateMany({ filename: record.filename }, { $set: { expired: true } });
+};
+
+// Retention: free storage is small, so bytes are removed DELIVERED_KEEP_HOURS after delivery,
+// or RETENTION_DAYS after upload if nobody ever dropped the file. History rows stay, marked expired.
 const cleanupExpired = async () => {
-  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const deliveredCutoff = new Date(Date.now() - DELIVERED_KEEP_HOURS * 60 * 60 * 1000);
+  const waitingCutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
   const old = await File.find({
     transferType: "send",
     expired: { $ne: true },
     $or: [
-      { dropped: true, deliveredAt: { $lt: cutoff } },
-      { dropped: { $ne: true }, uploadedAt: { $lt: cutoff } }
+      { dropped: true, deliveredAt: { $lt: deliveredCutoff } },
+      { dropped: { $ne: true }, uploadedAt: { $lt: waitingCutoff } }
     ]
   });
 
-  for (const record of old) {
-    await deleteStored(record, uploadDir);
-    await File.updateMany({ filename: record.filename }, { $set: { expired: true } });
-  }
+  for (const record of old) await expireRecord(record);
   if (old.length) console.log(`Retention cleanup: removed ${old.length} old files`);
+};
+
+// Before a big upload: if it would not fit, remove already-delivered files (oldest first).
+// Files still waiting for their receiver are never removed. Returns true when there is room.
+const makeRoomFor = async (bytes) => {
+  let used = await storedBytes();
+  if (used + bytes <= STORAGE_BUDGET_BYTES) return true;
+
+  const delivered = await File.find({ transferType: "send", dropped: true, expired: { $ne: true } }).sort({
+    deliveredAt: 1
+  });
+  for (const record of delivered) {
+    await expireRecord(record);
+    used -= record.size || 0;
+    if (used + bytes <= STORAGE_BUDGET_BYTES) return true;
+  }
+  return (await storedBytes()) + bytes <= STORAGE_BUDGET_BYTES;
 };
 
 const publicFile = (file) => ({
@@ -205,7 +229,12 @@ const startServer = async () => {
 
     // Health check: used by Render, and by the app to wake a sleeping free server
     app.get("/api/health", (req, res) => {
-      res.json({ ok: true, maxFileBytes: MAX_FILE_SIZE, retentionDays: RETENTION_DAYS });
+      res.json({
+        ok: true,
+        maxFileBytes: MAX_FILE_SIZE,
+        retentionDays: RETENTION_DAYS,
+        deliveredKeepHours: DELIVERED_KEEP_HOURS
+      });
     });
 
     const authenticate = (req, res, next) => {
@@ -445,7 +474,24 @@ const startServer = async () => {
 
     // ---------- send (grab) ----------
 
-    app.post("/api/upload", authenticate, (req, res) => {
+    app.post("/api/upload", authenticate, async (req, res) => {
+      // Check size and free space from the request header before receiving any bytes
+      const declared = Number(req.headers["content-length"]) || 0;
+      if (declared > MAX_FILE_SIZE + 1024 * 1024) {
+        return res.status(413).json({ success: false, message: `File is larger than ${MAX_FILE_MB} MB` });
+      }
+      try {
+        if (!(await makeRoomFor(declared))) {
+          return res.status(507).json({
+            success: false,
+            message:
+              "The server's free storage is full of files that are still waiting to be received. Try again later or send a smaller file."
+          });
+        }
+      } catch (error) {
+        console.error("Storage check failed:", error.message);
+      }
+
       upload.single("file")(req, res, async (uploadError) => {
         if (uploadError) {
           const tooBig = uploadError.code === "LIMIT_FILE_SIZE";
@@ -526,6 +572,9 @@ const startServer = async () => {
     // ---------- receive (drop) ----------
 
     // Files waiting for the logged-in user. The Drop page polls this to show "incoming file from X".
+    // ---------- direct (peer-to-peer) transfers for big files ----------
+    app.use("/api/p2p", createP2PRouter({ authenticate, User, File, getFileCategory }));
+
     app.get("/api/incoming", authenticate, async (req, res) => {
       try {
         const pending = await File.find({
@@ -630,7 +679,9 @@ const startServer = async () => {
         const stream = await openFile(file, uploadDir);
         if (!stream) {
           return file.expired
-            ? res.status(410).json({ message: `This file was removed ${RETENTION_DAYS} days after delivery to save space` })
+            ? res.status(410).json({
+                message: `This file was removed from the server ${DELIVERED_KEEP_HOURS} hours after delivery to save space`
+              })
             : res.status(404).json({ message: "File not found on server" });
         }
 
@@ -679,9 +730,14 @@ const startServer = async () => {
       cleanupExpired().catch((error) => console.error("Retention cleanup failed:", error.message));
     }, 60 * 60 * 1000);
 
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT} (max file ${MAX_FILE_MB} MB, kept ${RETENTION_DAYS} days)`);
+    const server = app.listen(PORT, () => {
+      console.log(
+        `Server running on port ${PORT} (max file ${MAX_FILE_MB} MB, delivered files kept ${DELIVERED_KEEP_HOURS} h, waiting files ${RETENTION_DAYS} days)`
+      );
     });
+    // A 200 MB video on a slow connection can take longer than Node's default 5-minute limit
+    server.requestTimeout = 60 * 60 * 1000;
+    server.headersTimeout = 2 * 60 * 1000;
   } catch (err) {
     console.error("Startup error:", err.message || err);
     process.exit(1);

@@ -1,34 +1,87 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, FolderUp, Send, X, CheckCircle2, UserCheck, UserX, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import axios from "axios";
+import {
+  ArrowRight,
+  AtSign,
+  CheckCircle2,
+  Cloud,
+  FileUp,
+  FolderUp,
+  Loader2,
+  Send,
+  ShieldCheck,
+  ShieldAlert,
+  UserCheck,
+  UserX,
+  X,
+  Zap
+} from "lucide-react";
 
-import "./HomePage.css";
 import "./Transfer.css";
-import SampleVideo from "./Sample_video.mp4";
 import NavBar from "../components/NavBar";
 import SiteFooter from "../components/SiteFooter";
 import GestureDetector from "../components/GestureDetector";
 import FileCard from "../components/FileCard";
-import { API_URL, authHeaders, errorMessage } from "../lib/api";
+import { API_URL, authHeaders, errorMessage, getServerLimits, onServerLimits } from "../lib/api";
 import { MAX_UPLOAD_BYTES, categoryOf, formatSize, sha256Hex, zipFolder } from "../lib/files";
+import { isDirectSupported, sendDirect } from "../lib/p2p";
 
-// Seconds between the grab gesture and the actual upload, so a wrong grab can be cancelled
+// Seconds between the grab gesture and the actual send, so a wrong grab can be cancelled
 const SEND_CONFIRM_SECONDS = 2;
 
-const HomePage = ({ user, onLogout }) => {
-  const [selected, setSelected] = useState(null); // { file, isFolder, folderName, count, previewUrl }
-  const [receiverUsername, setReceiverUsername] = useState(import.meta.env.VITE_RECEIVER_USERNAME || "");
+const formatDuration = (seconds) => {
+  if (seconds == null || !Number.isFinite(seconds)) return "";
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s left`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} min ${Math.round(seconds % 60)} s left`;
+};
 
-  // idle -> preparing -> countdown -> uploading -> sent  (or back to idle / error)
+// Files up to the server limit wait on the server (receiver can drop later).
+// Bigger files go straight from this browser to the receiver's (both must be online).
+const routeFor = (size, limit) => (size > limit ? "direct" : "server");
+
+const CountdownRing = ({ value }) => {
+  const radius = 27;
+  const length = 2 * Math.PI * radius;
+  return (
+    <span className="countdown-ring" aria-hidden="true">
+      <svg viewBox="0 0 64 64">
+        <circle className="track" cx="32" cy="32" r={radius} />
+        <circle
+          className="bar"
+          cx="32"
+          cy="32"
+          r={radius}
+          strokeDasharray={length}
+          strokeDashoffset={length * (1 - value / SEND_CONFIRM_SECONDS)}
+        />
+      </svg>
+      <b>{value}</b>
+    </span>
+  );
+};
+
+const HomePage = ({ user, onLogout }) => {
+  const [selected, setSelected] = useState(null); // { file, isFolder, folderName, count, previewUrl, route }
+  const [receiverUsername, setReceiverUsername] = useState(import.meta.env.VITE_RECEIVER_USERNAME || "");
+  const [dragging, setDragging] = useState(false);
+  // The server says how big a stored file may be; until it answers, use the built-in default
+  const [serverLimit, setServerLimit] = useState(() => getServerLimits()?.maxFileBytes || MAX_UPLOAD_BYTES);
+  useEffect(() => onServerLimits((limits) => setServerLimit(limits.maxFileBytes)), []);
+
+  // idle → preparing → countdown → (server) uploading → sent
+  //                              → (direct) waiting → connecting → streaming → verifying → delivered
   const [phase, setPhase] = useState("idle");
   const [countdown, setCountdown] = useState(SEND_CONFIRM_SECONDS);
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
   const [message, setMessage] = useState("");
-  const [receiver, setReceiver] = useState(null); // { id, username }
+  const [receiver, setReceiver] = useState(null);
+  const [result, setResult] = useState(null);
 
   const countdownTimer = useRef(null);
   const uploadAbort = useRef(null);
+  const directJob = useRef(null);
   const hashJob = useRef(null); // { file, promise } so the SHA-256 is ready before the grab
 
   // Look the receiver up while typing, so the grab can start sending at once
@@ -61,22 +114,38 @@ const HomePage = ({ user, onLogout }) => {
     };
   }, [receiverUsername]);
 
-  const startHash = (file) => {
-    hashJob.current = { file, promise: sha256Hex(file).catch(() => null) };
-  };
-
   // Free the preview's object URL when the selection changes or the page closes
   useEffect(() => () => selected?.previewUrl && URL.revokeObjectURL(selected.previewUrl), [selected]);
+  useEffect(
+    () => () => {
+      clearInterval(countdownTimer.current);
+      directJob.current?.cancel();
+    },
+    []
+  );
 
-  useEffect(() => () => clearInterval(countdownTimer.current), []);
+  // A direct transfer needs this tab open: warn before closing it
+  const directActive = ["waiting", "connecting", "streaming", "verifying"].includes(phase);
+  useEffect(() => {
+    if (!directActive) return undefined;
+    const warn = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [directActive]);
 
   const resetTransfer = () => {
     clearInterval(countdownTimer.current);
     uploadAbort.current?.abort();
+    directJob.current?.cancel();
+    directJob.current = null;
     setPhase("idle");
-    setProgress(0);
+    setProgress({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
     setMessage("");
     setReceiver(null);
+    setResult(null);
   };
 
   const clearSelection = () => {
@@ -84,20 +153,31 @@ const HomePage = ({ user, onLogout }) => {
     setSelected(null);
   };
 
+  const fail = (text) => {
+    setPhase("error");
+    setMessage(text);
+  };
+
+  const choose = (file, extra = {}) => {
+    const route = routeFor(file.size, serverLimit);
+    if (route === "direct" && !isDirectSupported()) {
+      fail(`"${file.name}" is ${formatSize(file.size)}. This browser cannot send files over ${formatSize(serverLimit)}.`);
+      return;
+    }
+    const kind = categoryOf(file.type, file.name);
+    // Previews of very big videos are fine: the browser streams them from disk
+    const previewUrl = !extra.isFolder && (kind === "image" || kind === "video") ? URL.createObjectURL(file) : null;
+    setSelected({ file, isFolder: false, previewUrl, route, ...extra });
+    // Server route: compute the fingerprint now so the grab can start the upload at once
+    hashJob.current = route === "server" ? { file, promise: sha256Hex(file).catch(() => null) } : null;
+  };
+
   const pickFile = (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (file.size > MAX_UPLOAD_BYTES) {
-      setMessage(`"${file.name}" is ${formatSize(file.size)}. The limit is ${formatSize(MAX_UPLOAD_BYTES)}.`);
-      setPhase("error");
-      return;
-    }
     resetTransfer();
-    const kind = categoryOf(file.type, file.name);
-    const previewUrl = kind === "image" || kind === "video" ? URL.createObjectURL(file) : null;
-    setSelected({ file, isFolder: false, previewUrl });
-    startHash(file);
+    choose(file);
   };
 
   const pickFolder = async (event) => {
@@ -107,31 +187,32 @@ const HomePage = ({ user, onLogout }) => {
     setPhase("preparing");
     setMessage("Zipping folder…");
     try {
-      const zipped = await zipFolder(files, (ratio) => setProgress(ratio));
+      const zipped = await zipFolder(files, (ratio) => setProgress((p) => ({ ...p, ratio })));
       event.target.value = "";
-      if (zipped.file.size > MAX_UPLOAD_BYTES) {
-        setPhase("error");
-        setMessage(`The zipped folder is ${formatSize(zipped.file.size)}. The limit is ${formatSize(MAX_UPLOAD_BYTES)}.`);
-        return;
-      }
-      setSelected({ file: zipped.file, isFolder: true, folderName: zipped.folderName, count: zipped.count });
-      startHash(zipped.file);
       setPhase("idle");
       setMessage("");
-      setProgress(0);
+      setProgress({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
+      choose(zipped.file, { isFolder: true, folderName: zipped.folderName, count: zipped.count });
     } catch (error) {
-      setPhase("error");
-      setMessage(`Could not zip the folder: ${errorMessage(error)}`);
+      fail(`Could not zip the folder: ${errorMessage(error)}`);
     }
   };
 
-  const upload = useCallback(
-    async (target) => {
-      if (!selected) return;
-      setPhase("uploading");
-      setProgress(0);
-      setMessage("Checking file integrity…");
+  const onDropFile = (event) => {
+    event.preventDefault();
+    setDragging(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    resetTransfer();
+    choose(file);
+  };
 
+  // ---------- route 1: through the server ----------
+  const uploadToServer = useCallback(
+    async (target) => {
+      setPhase("uploading");
+      setProgress({ ratio: 0, bytesPerSecond: 0, secondsLeft: null });
+      setMessage("Checking file integrity…");
       try {
         const job = hashJob.current?.file === selected.file ? hashJob.current.promise : sha256Hex(selected.file);
         const hash = await job;
@@ -142,38 +223,92 @@ const HomePage = ({ user, onLogout }) => {
         if (hash) form.append("sha256", hash);
 
         uploadAbort.current = new AbortController();
-        setMessage(`Sending to ${target.username}…`);
+        setMessage(`Uploading for ${target.username}…`);
+        const started = performance.now();
 
         const { data } = await axios.post(`${API_URL}/api/upload`, form, {
           headers: authHeaders(),
           signal: uploadAbort.current.signal,
-          onUploadProgress: (event) => event.total && setProgress(event.loaded / event.total)
+          onUploadProgress: (event) => {
+            if (!event.total) return;
+            const seconds = Math.max(0.001, (performance.now() - started) / 1000);
+            const bytesPerSecond = event.loaded / seconds;
+            setProgress({
+              ratio: event.loaded / event.total,
+              bytesPerSecond,
+              secondsLeft: bytesPerSecond ? (event.total - event.loaded) / bytesPerSecond : null
+            });
+          }
         });
 
         if (!data.success) throw new Error(data.message);
         setPhase("sent");
-        setMessage(`Sent. Waiting for ${target.username} to make the DROP gesture.`);
+        setMessage(`Sent. ${target.username} can DROP it any time in the next 7 days.`);
       } catch (error) {
         if (axios.isCancel(error)) return;
-        setPhase("error");
-        setMessage(`Upload failed: ${errorMessage(error)}`);
+        fail(`Upload failed: ${errorMessage(error)}`);
       }
     },
     [selected]
   );
 
-  // Step 1 of sending: find the receiver, then start the cancel window
+  // ---------- route 2: straight to the receiver's browser ----------
+  const sendStraight = useCallback(
+    (target) => {
+      setPhase("waiting");
+      setMessage(`Waiting for ${target.username} to open Receive and make the DROP gesture…`);
+      const job = sendDirect({
+        file: selected.file,
+        name: selected.file.name,
+        isFolder: selected.isFolder,
+        receiver: target,
+        onStatus: (stage) => {
+          if (stage === "connecting") {
+            setPhase("connecting");
+            setMessage(`${target.username} dropped. Connecting directly…`);
+          }
+          if (stage === "sending") {
+            setPhase("streaming");
+            setMessage(`Sending straight to ${target.username}…`);
+          }
+          if (stage === "verifying") {
+            setPhase("verifying");
+            setMessage("Waiting for the receiver to confirm the SHA-256 fingerprint…");
+          }
+        },
+        onProgress: (p) => setProgress(p)
+      });
+      directJob.current = job;
+      job.promise
+        .then((outcome) => {
+          directJob.current = null;
+          setResult(outcome);
+          setPhase("delivered");
+          setMessage(`${selected.file.name} arrived on ${target.username}'s device.`);
+        })
+        .catch((error) => {
+          directJob.current = null;
+          if (error.message === "cancelled") return;
+          fail(`Direct transfer failed: ${errorMessage(error)}`);
+        });
+    },
+    [selected]
+  );
+
+  const deliver = useCallback(
+    (target) => (selected.route === "direct" ? sendStraight(target) : uploadToServer(target)),
+    [selected, sendStraight, uploadToServer]
+  );
+
+  // The grab: find the receiver, then give a short window to cancel
   const startSend = useCallback(
     async ({ skipCountdown = false } = {}) => {
       if (!selected || phase !== "idle") return;
-
       const name = receiverUsername.trim();
       if (!name) {
-        setPhase("error");
-        setMessage("Enter the receiver's username or email first.");
+        fail("Type the receiver's username or email first.");
         return;
       }
-
       try {
         let target = lookup.state === "found" && lookup.name === name ? lookup.user : null;
         if (!target) {
@@ -187,10 +322,9 @@ const HomePage = ({ user, onLogout }) => {
         setReceiver(target);
 
         if (skipCountdown) {
-          upload(target);
+          deliver(target);
           return;
         }
-
         setPhase("countdown");
         setCountdown(SEND_CONFIRM_SECONDS);
         let left = SEND_CONFIRM_SECONDS;
@@ -200,19 +334,18 @@ const HomePage = ({ user, onLogout }) => {
           setCountdown(left);
           if (left <= 0) {
             clearInterval(countdownTimer.current);
-            upload(target);
+            deliver(target);
           }
         }, 1000);
       } catch (error) {
-        setPhase("error");
-        setMessage(
+        fail(
           error?.response?.status === 404
             ? `No user called "${name}". Check the username or email.`
-            : `Could not find receiver: ${errorMessage(error)}`
+            : `Could not find the receiver: ${errorMessage(error)}`
         );
       }
     },
-    [selected, phase, receiverUsername, upload, lookup]
+    [selected, phase, receiverUsername, deliver, lookup]
   );
 
   const handleGestureEvent = useCallback(
@@ -224,145 +357,285 @@ const HomePage = ({ user, onLogout }) => {
 
   const armed = Boolean(selected && receiverUsername.trim() && lookup.state !== "missing" && phase === "idle");
   const kind = selected ? categoryOf(selected.file.type, selected.file.name) : null;
-  const previewUrl = selected?.previewUrl;
+  const busy = !["idle", "error", "sent", "delivered"].includes(phase);
+  const showProgress = ["uploading", "streaming", "preparing"].includes(phase);
 
   return (
     <>
-      <NavBar isLoggedIn={Boolean(user)} onLogout={onLogout} />
-      <video className="background-video" autoPlay loop muted playsInline>
-        <source src={SampleVideo} type="video/mp4" />
-      </video>
-      <div className="background-overlay"></div>
+      <NavBar user={user} onLogout={onLogout} />
 
-      <GestureDetector
-        onEvent={handleGestureEvent}
-        armed={armed}
-        armedText="Ready: open your hand, then close it into a fist to send."
-        idleText={
-          !selected
-            ? "Pick a file or folder to arm the grab gesture."
-            : lookup.state === "missing"
-              ? "That receiver does not exist. Check the username."
-              : "Enter a receiver to arm the grab gesture."
-        }
-        hint="GRAB = open hand → fist"
-        target="grab"
-      />
-
-      <div className="home-page-container">
-        <div className="home-page-content glass-effect-home transfer-card">
-          <h1 className="home-page-title">Send a File</h1>
-          <p className="home-page-subtitle">
-            Choose any file or folder, then make a <strong>GRAB</strong> gesture
-          </p>
-
-          <div className="receiver-input-container">
-            <label htmlFor="receiver-username" className="receiver-label">Send to (username or email):</label>
-            <input
-              id="receiver-username"
-              type="text"
-              value={receiverUsername}
-              onChange={(event) => setReceiverUsername(event.target.value)}
-              placeholder="Receiver's username"
-              className="receiver-input"
-              disabled={phase !== "idle" && phase !== "error"}
-              autoComplete="off"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-            <p className={`receiver-status ${lookup.state}`} aria-live="polite">
-              {lookup.state === "checking" && (<><Loader2 size={14} className="spin" /> Checking…</>)}
-              {lookup.state === "found" && (<><UserCheck size={14} /> {lookup.user.username} found</>)}
-              {lookup.state === "missing" && (<><UserX size={14} /> No user with that username or email</>)}
-            </p>
-          </div>
-
-          {!selected ? (
-            <div className="picker-row">
-              <label className="home-upload-area picker">
-                <Upload className="home-upload-icon" />
-                <span className="home-upload-text">Choose file</span>
-                <input type="file" className="hidden" onChange={pickFile} />
-              </label>
-              <label className="home-upload-area picker">
-                <FolderUp className="home-upload-icon" />
-                <span className="home-upload-text">Choose folder</span>
-                <input type="file" className="hidden" webkitdirectory="" directory="" multiple onChange={pickFolder} />
-              </label>
-            </div>
-          ) : (
-            <div className="selected-preview">
-              {kind === "image" && previewUrl && <img src={previewUrl} alt={selected.file.name} className="preview-media" />}
-              {kind === "video" && previewUrl && <video src={previewUrl} className="preview-media" controls muted playsInline />}
-              <FileCard
-                name={selected.isFolder ? `${selected.folderName}/` : selected.file.name}
-                size={selected.file.size}
-                mimeType={selected.file.type}
-                isFolder={selected.isFolder}
-                note={selected.isFolder ? `${selected.count} files, sent as ${selected.file.name}` : null}
-              />
-            </div>
-          )}
-
-          {phase === "countdown" && receiver && (
-            <div className="transfer-status countdown">
-              <div className="countdown-number">{countdown}</div>
-              <p>Sending to <strong>{receiver.username}</strong>…</p>
-              <button type="button" className="transfer-btn danger" onClick={resetTransfer}>
-                <X size={16} /> Cancel
-              </button>
-            </div>
-          )}
-
-          {(phase === "uploading" || phase === "preparing") && (
-            <div className="transfer-status">
-              <p>{message}</p>
-              <div className="progress"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
-              {phase === "uploading" && (
-                <button type="button" className="transfer-btn danger" onClick={resetTransfer}>
-                  <X size={16} /> Stop
-                </button>
-              )}
-            </div>
-          )}
-
-          {phase === "sent" && (
-            <div className="transfer-status success">
-              <CheckCircle2 className="status-icon" />
-              <p>{message}</p>
-              <p className="muted">You can cancel it from History until it is dropped.</p>
-            </div>
-          )}
-
-          {phase === "error" && message && <div className="transfer-status error"><p>{message}</p></div>}
-
-          <div className="transfer-actions">
-            {selected && phase === "idle" && (
-              <button
-                type="button"
-                className="transfer-btn secondary"
-                onClick={() => startSend({ skipCountdown: true })}
-                title="Same transfer without the gesture (useful for comparison tests)"
-              >
-                <Send size={16} /> Send without gesture
-              </button>
-            )}
-            {selected && phase !== "uploading" && (
-              <button type="button" className="transfer-btn" onClick={clearSelection}>
-                {phase === "sent" ? "Send another" : "Choose a different file"}
-              </button>
-            )}
-            {phase === "error" && !selected && (
-              <button type="button" className="transfer-btn" onClick={resetTransfer}>OK</button>
-            )}
-            {phase === "error" && selected && (
-              <button type="button" className="transfer-btn" onClick={resetTransfer}>Try again</button>
-            )}
-            <Link to="/drop" className="transfer-link">Receiving instead? Go to Drop →</Link>
+      <main className="app-page">
+        <div className="page-head">
+          <span className="icon-tile grab">
+            <Send />
+          </span>
+          <div>
+            <h1>Send a file</h1>
+            <p>Choose who it is for and what to send, then GRAB it in front of your camera.</p>
           </div>
         </div>
-      </div>
+
+        <div className="app-grid">
+          <div>
+            <section className="card">
+              <div className="card-section">
+                <label className="card-title" htmlFor="receiver-username">
+                  <span className="step-badge">1</span> Who is it for?
+                </label>
+                <div className="field-input">
+                  <AtSign size={20} />
+                  <input
+                    id="receiver-username"
+                    type="text"
+                    value={receiverUsername}
+                    onChange={(event) => setReceiverUsername(event.target.value)}
+                    placeholder="Receiver's username or email"
+                    disabled={busy}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  {lookup.state === "checking" && <Loader2 size={18} className="spin" />}
+                  {lookup.state === "found" && <UserCheck size={18} color="var(--ok)" />}
+                  {lookup.state === "missing" && <UserX size={18} color="var(--bad)" />}
+                </div>
+                <p className={`receiver-status ${lookup.state}`} aria-live="polite">
+                  {lookup.state === "found" && `${lookup.user.username} found`}
+                  {lookup.state === "missing" && "No user with that username or email"}
+                </p>
+              </div>
+
+              <div className="card-section">
+                <h2 className="card-title">
+                  <span className="step-badge">2</span> What are you sending?
+                </h2>
+
+                {!selected ? (
+                  <div
+                    className="pickers"
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setDragging(true);
+                    }}
+                    onDragLeave={() => setDragging(false)}
+                    onDrop={onDropFile}
+                  >
+                    <label className={`picker ${dragging ? "dragging" : ""}`}>
+                      <span className="icon-tile grab">
+                        <FileUp />
+                      </span>
+                      <strong>Choose file</strong>
+                      <span className="muted">Any type · or drag it here</span>
+                      <input type="file" onChange={pickFile} disabled={busy} aria-label="Choose a file to send" />
+                    </label>
+                    <label className="picker folder">
+                      <span className="icon-tile sun">
+                        <FolderUp />
+                      </span>
+                      <strong>Choose folder</strong>
+                      <span className="muted">Zipped for you</span>
+                      <input
+                        type="file"
+                        webkitdirectory=""
+                        directory=""
+                        multiple
+                        onChange={pickFolder}
+                        disabled={busy}
+                        aria-label="Choose a folder to send"
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div>
+                    {kind === "image" && selected.previewUrl && (
+                      <img src={selected.previewUrl} alt={selected.file.name} className="preview-media" />
+                    )}
+                    {kind === "video" && selected.previewUrl && (
+                      <video src={selected.previewUrl} className="preview-media" controls muted playsInline />
+                    )}
+                    <FileCard
+                      name={selected.isFolder ? `${selected.folderName}/` : selected.file.name}
+                      size={selected.file.size}
+                      mimeType={selected.file.type}
+                      isFolder={selected.isFolder}
+                      note={selected.isFolder ? `${selected.count} files, sent as ${selected.file.name}` : null}
+                      badge={
+                        !busy && phase !== "sent" && phase !== "delivered" ? (
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={clearSelection}>
+                            <X size={16} /> Change
+                          </button>
+                        ) : null
+                      }
+                    />
+                    {selected.route === "server" ? (
+                      <p className="route server">
+                        <Cloud size={18} />
+                        <span>
+                          Waits safely on the server for up to 7 days, so the receiver can DROP it whenever they
+                          like.
+                        </span>
+                      </p>
+                    ) : (
+                      <p className="route direct">
+                        <Zap size={18} />
+                        <span>
+                          Over {formatSize(serverLimit)}, so it goes <strong>directly</strong> to the receiver's
+                          device. They should have Receive open, and keep this tab open until it arrives.
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* ---------- status ---------- */}
+              {phase === "countdown" && receiver && (
+                <div className="status countdown">
+                  <CountdownRing value={countdown} />
+                  <p>
+                    Sending to <strong>{receiver.username}</strong>…
+                  </p>
+                  <button type="button" className="btn btn-danger" onClick={resetTransfer}>
+                    <X size={16} /> Cancel
+                  </button>
+                </div>
+              )}
+
+              {["waiting", "connecting", "verifying"].includes(phase) && (
+                <div className="status">
+                  <div className="status-head">
+                    <span className="icon-tile drop">
+                      <Loader2 className="spin" />
+                    </span>
+                    <span>{message}</span>
+                  </div>
+                  <div className="progress indeterminate drop">
+                    <div />
+                  </div>
+                  <p className="muted">Keep this tab open.</p>
+                  <div className="actions">
+                    <button type="button" className="btn btn-danger btn-sm" onClick={resetTransfer}>
+                      <X size={16} /> Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showProgress && (
+                <div className="status">
+                  <div className="status-head">
+                    <span>{message}</span>
+                  </div>
+                  <div className="progress">
+                    <div style={{ width: `${Math.round(progress.ratio * 100)}%` }} />
+                  </div>
+                  {phase !== "preparing" && (
+                    <div className="progress-meta">
+                      <span>
+                        {Math.round(progress.ratio * 100)}% · {formatSize(progress.ratio * (selected?.file.size || 0))} of{" "}
+                        {formatSize(selected?.file.size || 0)}
+                      </span>
+                      <span>
+                        {progress.bytesPerSecond ? `${formatSize(progress.bytesPerSecond)}/s · ` : ""}
+                        {formatDuration(progress.secondsLeft)}
+                      </span>
+                    </div>
+                  )}
+                  {phase !== "preparing" && (
+                    <div className="actions">
+                      <button type="button" className="btn btn-danger btn-sm" onClick={resetTransfer}>
+                        <X size={16} /> Stop
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {phase === "sent" && (
+                <div className="status success">
+                  <div className="status-head">
+                    <span className="icon-tile leaf">
+                      <CheckCircle2 />
+                    </span>
+                    <span>{message}</span>
+                  </div>
+                  <p className="muted">You can cancel it from History until it is dropped.</p>
+                </div>
+              )}
+
+              {phase === "delivered" && (
+                <div className="status success">
+                  <div className="status-head">
+                    <span className={`icon-tile ${result?.verified ? "leaf" : "grab"}`}>
+                      {result?.verified ? <ShieldCheck /> : <ShieldAlert />}
+                    </span>
+                    <span>{message}</span>
+                  </div>
+                  <p className="muted">
+                    {result?.verified
+                      ? "The receiver's SHA-256 fingerprint matches yours: the file arrived unchanged."
+                      : "The receiver's fingerprint did not match. Please send it again."}
+                  </p>
+                </div>
+              )}
+
+              {phase === "error" && message && (
+                <div className="status error" role="alert">
+                  {message}
+                </div>
+              )}
+
+              <div className="actions">
+                {selected && phase === "idle" && (
+                  <button
+                    type="button"
+                    className="btn btn-grab btn-big"
+                    onClick={() => startSend({ skipCountdown: true })}
+                    disabled={!receiverUsername.trim() || lookup.state === "missing"}
+                    title="Same transfer without the gesture (useful for comparison tests)"
+                  >
+                    <Send size={18} /> Send without gesture
+                  </button>
+                )}
+                {(phase === "sent" || phase === "delivered") && (
+                  <button type="button" className="btn btn-grab btn-big" onClick={clearSelection}>
+                    <FileUp size={18} /> Send another
+                  </button>
+                )}
+                {phase === "error" && (
+                  <button type="button" className="btn" onClick={resetTransfer}>
+                    {selected ? "Try again" : "OK"}
+                  </button>
+                )}
+              </div>
+            </section>
+
+            <Link to="/drop" className="text-link">
+              Receiving instead? Open Receive <ArrowRight size={16} />
+            </Link>
+          </div>
+
+          <div className="camera-column">
+            <GestureDetector
+              onEvent={handleGestureEvent}
+              armed={armed}
+              target="grab"
+              hint="GRAB = open hand, then close it into a fist"
+              armedText="Ready. Open your hand, then close it into a fist to send."
+              idleText={
+                !selected
+                  ? "Pick a file or folder first. The grab turns on after that."
+                  : lookup.state === "missing"
+                    ? "That receiver does not exist. Check the username."
+                    : !receiverUsername.trim()
+                      ? "Type who it is for to turn on the grab."
+                      : "Busy with the current transfer."
+              }
+            />
+          </div>
+        </div>
+      </main>
 
       <SiteFooter />
     </>

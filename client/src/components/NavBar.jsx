@@ -1,149 +1,121 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Search, LogOut, User } from 'lucide-react';
-import Login from './Login';
-import './NavBar.css';
+import { useState } from "react";
+import { NavLink, useNavigate } from "react-router-dom";
+import { History, Inbox, LogOut, Send } from "lucide-react";
+import BrandMark from "./BrandMark";
+import { API_URL } from "../lib/api";
+import "./NavBar.css";
 
-const NavBar = ({ isLoggedIn = false, onLogin, onLogout }) => {
+// Each section keeps its colour everywhere: Send = coral, Receive = aqua, History = violet
+const LINKS = [
+  { to: "/home", label: "Send", icon: Send, tone: "grab" },
+  { to: "/drop", label: "Receive", icon: Inbox, tone: "drop" },
+  { to: "/history", label: "History", icon: History, tone: "trail" },
+];
+
+const initialOf = (user) => (user?.name || user?.username || "?").trim().charAt(0).toUpperCase();
+
+const NavBar = ({ user, onLogout }) => {
   const navigate = useNavigate();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showUserMenu, setShowUserMenu] = useState(false);
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-
-  const handleSearch = (e) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      console.log('Searching for:', searchQuery);
-      // Add search functionality here
-    }
-  };
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const handleLogout = async () => {
-    setShowUserMenu(false);
-    const token = localStorage.getItem('token');
-    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-    
+    setMenuOpen(false);
+    const token = localStorage.getItem("token");
     try {
-      await fetch(`${API_URL}/api/auth/logout`, {
-        method: 'POST',
-        headers: {
-          'Authorization': token
-        }
-      });
+      await fetch(`${API_URL}/api/auth/logout`, { method: "POST", headers: { Authorization: token } });
     } catch (error) {
-      console.error('Logout error:', error);
+      console.error("Logout error:", error);
     } finally {
-      // Clear local state
-      localStorage.removeItem('token');
-      if (onLogout) {
-        onLogout();
-      }
-      navigate('/');
+      localStorage.removeItem("token");
+      onLogout?.();
+      navigate("/");
     }
   };
 
   return (
-    <nav className="navbar-container">
-      <div className="navbar-content">
-        {/* Logo/Brand */}
-        <div className="navbar-brand">
-          <div className="brand-icon">
-            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="16" cy="16" r="14" fill="url(#gradient)" stroke="#fff" strokeWidth="2"/>
-              <path d="M16 8V16M16 16L12 12M16 16L20 12" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M12 20H20" stroke="#fff" strokeWidth="2" strokeLinecap="round"/>
-              <defs>
-                <linearGradient id="gradient" x1="0" y1="0" x2="32" y2="32">
-                  <stop offset="0%" stopColor="#6366f1"/>
-                  <stop offset="100%" stopColor="#8b5cf6"/>
-                </linearGradient>
-              </defs>
-            </svg>
-          </div>
-          <span className="brand-text">DropIt</span>
-        </div>
+    <>
+      <header className="topbar">
+        <div className="topbar-inner">
+          <NavLink to="/home" className="topbar-brand" aria-label="DropIt home">
+            <BrandMark size={34} />
+            <span>DropIt</span>
+          </NavLink>
 
-        {/* Search Bar */}
-        <form className="navbar-search" onSubmit={handleSearch}>
-          <input
-            type="text"
-            placeholder="Search files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="search-input"
-          />
-          <button type="submit" className="search-btn">
-            <Search size={20} />
-          </button>
-        </form>
+          <nav className="topbar-links" aria-label="Main">
+            {LINKS.map((link) => {
+              const Icon = link.icon;
+              return (
+                <NavLink
+                  key={link.to}
+                  to={link.to}
+                  className={({ isActive }) => `topbar-link ${link.tone} ${isActive ? "active" : ""}`}
+                >
+                  <span className="topbar-link-icon">
+                    <Icon size={18} strokeWidth={2.2} />
+                  </span>
+                  {link.label}
+                </NavLink>
+              );
+            })}
+          </nav>
 
-        {/* Navigation Links */}
-        <div className="navbar-links">
-          <button
-            className="nav-link"
-            onClick={() => navigate('/home')}
-          >
-            Home
-          </button>
-          <button
-            className="nav-link"
-            onClick={() => navigate('/home')}
-          >
-            Send
-          </button>
-          <button
-            className="nav-link"
-            onClick={() => navigate('/drop')}
-          >
-            Drop
-          </button>
-          <button
-            className="nav-link"
-            onClick={() => navigate('/history')}
-          >
-            History
-          </button>
-        </div>
-
-        {/* User Actions */}
-        <div className="navbar-actions">
-          {!isLoggedIn && (
+          <div className="topbar-user">
             <button
-              className="login-btn"
-              onClick={() => setIsLoginModalOpen(true)}
+              type="button"
+              className="avatar-btn"
+              onClick={() => setMenuOpen((open) => !open)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Account menu"
             >
-              Login
+              {user?.avatar ? (
+                <img src={user.avatar} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                <span>{initialOf(user)}</span>
+              )}
             </button>
-          )}
-          {isLoggedIn && (
-            <div className="user-menu">
-              <button
-                className="user-btn"
-                onClick={() => setShowUserMenu(!showUserMenu)}
-              >
-                <User size={20} />
-              </button>
-              {showUserMenu && (
-                <div className="user-menu-dropdown">
-                  <button className="menu-item" onClick={handleLogout}>
-                    <LogOut size={18} />
-                    <span>Logout</span>
+            {menuOpen && (
+              <>
+                <button
+                  type="button"
+                  className="menu-backdrop"
+                  aria-label="Close menu"
+                  onClick={() => setMenuOpen(false)}
+                />
+                <div className="account-menu" role="menu">
+                  <div className="account-menu-head">
+                    <strong>{user?.name || user?.username}</strong>
+                    <span>@{user?.username}</span>
+                  </div>
+                  <button type="button" role="menuitem" className="account-menu-item" onClick={handleLogout}>
+                    <LogOut size={17} /> Sign out
                   </button>
                 </div>
-              )}
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </div>
-      </div>
-      <Login
-        isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
-        onLogin={(user) => {
-          setIsLoginModalOpen(false);
-          if (onLogin) onLogin(user);
-        }}
-      />
-    </nav>
+      </header>
+
+      {/* Phones: app-style tab bar at the bottom, within thumb reach */}
+      <nav className="tabbar" aria-label="Main">
+        {LINKS.map((link) => {
+          const Icon = link.icon;
+          return (
+            <NavLink
+              key={link.to}
+              to={link.to}
+              className={({ isActive }) => `tabbar-link ${link.tone} ${isActive ? "active" : ""}`}
+            >
+              <span className="tabbar-icon">
+                <Icon size={21} strokeWidth={2.2} />
+              </span>
+              {link.label}
+            </NavLink>
+          );
+        })}
+      </nav>
+    </>
   );
 };
 

@@ -22,6 +22,6 @@ services:
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: MAX_FILE_MB
-        value: "50"
+        value: "200"
       - key: RETENTION_DAYS
         value: "7"

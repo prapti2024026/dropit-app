@@ -1,5 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+// Fonts are bundled with the app (no request to a font service, works offline as a PWA)
+import '@fontsource-variable/figtree'
+import '@fontsource-variable/bricolage-grotesque'
 import './index.css'
 import App from './App.jsx'
 import { keepServerAwake } from './lib/api'

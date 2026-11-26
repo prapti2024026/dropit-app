@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import axios from "axios";
-import { AtSign, Check, Eye, EyeOff, Loader2, Lock, Mail, ShieldCheck, User, X } from "lucide-react";
+import { AtSign, Check, Eye, EyeOff, Loader2, Lock, Mail, User, X } from "lucide-react";
+import BrandMark from "./BrandMark";
 import { API_URL, authHeaders } from "../lib/api";
 import {
   PASSWORD_RULES,
@@ -357,9 +358,7 @@ const Login = ({ isOpen, onClose, onLogin, initialMode = "signin" }) => {
         )}
 
         <div className="auth-brand">
-          <span className="auth-logo" aria-hidden="true">
-            <ShieldCheck size={22} />
-          </span>
+          <BrandMark size={36} />
           <span>DropIt</span>
         </div>
 

@@ -12,9 +12,12 @@
     "test:gestures": "node --test src/lib/gestures.test.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
+    "@fontsource-variable/figtree": "^5.3.0",
     "@mediapipe/tasks-vision": "^1.2.3",
     "@tailwindcss/vite": "^4.1.18",
     "axios": "^1.15.0",
+    "hash-wasm": "^4.13.0",
     "jszip": "^3.10.2",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",

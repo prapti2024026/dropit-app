@@ -51,3 +51,12 @@ export const deleteStored = async (record, legacyDir) => {
   const diskPath = path.join(legacyDir, path.basename(record.filename || ""));
   if (record.filename && fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
 };
+
+// Total bytes currently stored in GridFS (used to stay inside the free 512 MB database)
+export const storedBytes = async () => {
+  const [row] = await mongoose.connection.db
+    .collection(`${BUCKET}.files`)
+    .aggregate([{ $group: { _id: null, total: { $sum: "$length" } } }])
+    .toArray();
+  return row?.total || 0;
+};

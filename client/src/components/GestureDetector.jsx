@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Camera, Grab, Hand, Loader2, VideoOff } from "lucide-react";
 import { FilesetResolver, GestureRecognizer } from "@mediapipe/tasks-vision";
 import { GestureStateMachine, mapLabel } from "../lib/gestures";
 import "./GestureDetector.css";
@@ -77,7 +78,6 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText, 
   const [stable, setStable] = useState("none");
   const [votes, setVotes] = useState(0);
   const [perf, setPerf] = useState({ fps: 0, ms: 0 });
-  const [collapsed, setCollapsed] = useState(false);
   const [flash, setFlash] = useState(null);
   const [primed, setPrimed] = useState(null);
 
@@ -194,37 +194,53 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText, 
     };
   }, []);
 
+  const StepIcon = target === "grab" ? Grab : Hand;
+
   return (
-    <div className={`gesture-panel ${collapsed ? "collapsed" : ""} ${armed ? "armed" : ""}`}>
-      <button
-        type="button"
-        className="gesture-panel-toggle"
-        onClick={() => setCollapsed((value) => !value)}
-        aria-label={collapsed ? "Show camera" : "Hide camera"}
-      >
-        {collapsed ? "Show camera" : "Hide"}
-      </button>
+    <section className={`gesture-panel ${target} ${armed ? "armed" : ""}`} aria-label="Gesture camera">
+      <header className="gesture-head">
+        <span className={`icon-tile ${target}`}>
+          <Camera />
+        </span>
+        <div>
+          <h2>Gesture camera</h2>
+          <p>{hint}</p>
+        </div>
+        <span className={`gesture-live ${status}`}>
+          {status === "running" ? "Live" : status === "loading" ? "Starting" : "Off"}
+        </span>
+      </header>
 
       <div className="gesture-video-wrap">
         <video ref={videoRef} className="gesture-video" autoPlay muted playsInline />
-        {flash && <div className={`gesture-flash ${flash}`}>{flash === "grab" ? "GRAB" : "DROP"}</div>}
+        {status === "loading" && (
+          <div className="gesture-cover">
+            <Loader2 className="spin" size={28} />
+            <span>Starting camera and gesture model…</span>
+          </div>
+        )}
+        {status === "error" && (
+          <div className="gesture-cover">
+            <VideoOff size={28} />
+            <span>{errorText}</span>
+          </div>
+        )}
+        {status === "running" && (
+          <span className={`gesture-pill ${stable}`}>
+            {LABEL_TEXT[stable]}
+          </span>
+        )}
+        {flash && (
+          <div className={`gesture-flash ${flash}`}>
+            <StepIcon size={44} />
+            {flash === "grab" ? "GRAB" : "DROP"}
+          </div>
+        )}
       </div>
-
-      {status === "loading" && <p className="gesture-line">Loading gesture model…</p>}
-      {status === "error" && <p className="gesture-line gesture-error">{errorText}</p>}
 
       {status === "running" && (
         <>
-          <div className="gesture-row">
-            <span className={`gesture-pill ${stable}`}>{LABEL_TEXT[stable]}</span>
-            <span className="gesture-perf">
-              {perf.fps} fps · {perf.ms} ms
-            </span>
-          </div>
-          <div className="gesture-votes" title="How many recent frames agree">
-            <div style={{ width: `${Math.round(votes * 100)}%` }} />
-          </div>
-          {armed && (
+          {armed ? (
             <ol className="gesture-steps" aria-label="Gesture steps">
               {STEPS[target].map((step, index) => {
                 const first = index === 0;
@@ -239,12 +255,19 @@ const GestureDetector = ({ onEvent, onStable, hint, armed, armedText, idleText, 
                 );
               })}
             </ol>
-          )}
-          <p className={`gesture-line ${armed ? "gesture-ready" : ""}`}>{armed ? armedText : idleText}</p>
-          {hint && <p className="gesture-hint">{hint}</p>}
+          ) : null}
+          <p className={`gesture-line ${armed ? "ready" : ""}`}>{armed ? armedText : idleText}</p>
+          <div className="gesture-meter">
+            <div className="gesture-votes" title="How many recent frames agree">
+              <div style={{ width: `${Math.round(votes * 100)}%` }} />
+            </div>
+            <span>
+              {perf.fps} fps · {perf.ms} ms
+            </span>
+          </div>
         </>
       )}
-    </div>
+    </section>
   );
 };
 

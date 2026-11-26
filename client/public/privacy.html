@@ -22,14 +22,15 @@ footer{margin-top:40px;padding-top:18px;border-top:1px solid #23232f;color:#9a9a
 <main>
 <a class="brand" href="/"><span class="logo"></span>DropIt</a>
 <h1>Privacy Policy</h1>
-<p class="meta">Last updated: 25 November 2026</p>
+<p class="meta">Last updated: 26 November 2026</p>
 <p>DropIt is a student research project that lets you send files to another DropIt user with hand gestures (GRAB to send, DROP to receive). This page explains what we collect and why.</p>
 
 <h2>What we collect</h2>
 <ul>
 <li><strong>Account details:</strong> your username and email address. If you sign up with email, your password is stored only as a salted bcrypt hash, never in plain text.</li>
 <li><strong>Google sign-in:</strong> if you choose "Continue with Google", Google shares your name, email address, profile picture and a Google account ID with us. We use them only to create and sign in to your DropIt account. We do not get your Google password or access to your Gmail, Drive or any other Google data.</li>
-<li><strong>Files you send:</strong> the file, its name, size, type and a SHA-256 checksum, plus who sent it to whom and when.</li>
+<li><strong>Files you send through the server</strong> (up to 200 MB): the file, its name, size, type and a SHA-256 checksum, plus who sent it to whom and when.</li>
+<li><strong>Direct transfers</strong> (bigger files): the file goes straight from the sender's browser to the receiver's browser over an encrypted WebRTC connection and never reaches our server. We only see the file's name, size and type, the connection details needed to link the two browsers (which include network addresses), and the SHA-256 checksum reported when it arrives.</li>
 </ul>
 
 <h2>Camera</h2>
@@ -45,7 +46,8 @@ footer{margin-top:40px;padding-top:18px;border-top:1px solid #23232f;color:#9a9a
 
 <h2>How long we keep it</h2>
 <ul>
-<li>Files are kept for at most 7 days and are then marked expired and can no longer be downloaded.</li>
+<li>Files stored on the server are removed 24 hours after the receiver drops them, or after 7 days if nobody does. The history entry stays, marked as removed.</li>
+<li>Connection details for direct transfers are kept in memory only, for at most a few hours.</li>
 <li>Your account stays until you ask us to delete it.</li>
 </ul>
 

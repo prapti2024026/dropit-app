@@ -38,6 +38,9 @@ const fileSchema = new mongoose.Schema({
   // True when the user picked a folder; the browser zipped it before upload
   isFolder: { type: Boolean, default: false },
 
+  // "server": bytes stored in GridFS until dropped. "direct": streamed browser-to-browser (never stored here)
+  mode: { type: String, enum: ["server", "direct"], default: "server" },
+
   // SHA-256 of the file contents (hex), computed by the server after upload
   sha256: { type: String },
 

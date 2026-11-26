@@ -1,9 +1,10 @@
 import JSZip from "jszip";
+import { createSHA256 } from "hash-wasm";
 
-// Must match the server's MAX_FILE_MB (50 MB on the free MongoDB storage)
-export const MAX_UPLOAD_BYTES = (Number(import.meta.env.VITE_MAX_FILE_MB) || 50) * 1024 * 1024;
-// Hashing reads the whole file into memory, so very large files rely on the server hash only
-export const MAX_HASH_BYTES = 200 * 1024 * 1024;
+// Must match the server's MAX_FILE_MB (200 MB by default)
+export const MAX_UPLOAD_BYTES = (Number(import.meta.env.VITE_MAX_FILE_MB) || 200) * 1024 * 1024;
+// Files are hashed in pieces of this size, so even large videos never sit in memory twice
+const HASH_CHUNK_BYTES = 8 * 1024 * 1024;
 
 export const formatSize = (bytes = 0) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -29,14 +30,22 @@ export const categoryOf = (mimeType = "", name = "") => {
   return "other";
 };
 
-// SHA-256 in the browser. Returns null when not possible (no HTTPS, or file too large).
-export const sha256Hex = async (blob) => {
-  if (!window.crypto?.subtle || blob.size > MAX_HASH_BYTES) return null;
-  const buffer = await blob.arrayBuffer();
-  const digest = await window.crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+// SHA-256 in the browser, read in 8 MB pieces (works for big videos on phones too).
+// onProgress(0..1) is optional. Returns null if hashing is not possible on this device.
+export const sha256Hex = async (blob, onProgress) => {
+  try {
+    const hasher = await createSHA256();
+    hasher.init();
+    for (let offset = 0; offset < blob.size; offset += HASH_CHUNK_BYTES) {
+      const piece = await blob.slice(offset, offset + HASH_CHUNK_BYTES).arrayBuffer();
+      hasher.update(new Uint8Array(piece));
+      onProgress?.(Math.min(1, (offset + HASH_CHUNK_BYTES) / blob.size));
+    }
+    return hasher.digest("hex");
+  } catch (error) {
+    console.warn("SHA-256 not available:", error);
+    return null;
+  }
 };
 
 // Zip the files chosen with <input webkitdirectory>, keeping the folder structure
