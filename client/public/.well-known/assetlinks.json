@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.dropit.gesture",
+        "sha256_cert_fingerprints": ["DE:4C:52:95:F7:EC:65:73:48:D5:B5:71:AD:C2:AC:F7:74:A5:FF:90:01:9F:F4:9E:9F:91:26:24:A3:06:24:C7"]
+      }
+    }]
