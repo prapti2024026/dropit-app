@@ -1,0 +1,293 @@
+/* Home (dashboard) for signed-in users */
+
+.welcome {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.welcome h1 {
+  font-size: clamp(30px, 4vw, 44px);
+  margin: 6px 0 8px;
+  max-width: 18em;
+}
+
+.welcome-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--trail-2);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.welcome .muted strong {
+  color: var(--snow);
+}
+
+.waiting-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  background: rgba(34, 211, 197, 0.1);
+  border: 1px solid rgba(34, 211, 197, 0.55);
+  color: var(--snow);
+  text-decoration: none;
+  transition: transform 0.15s ease, background 0.15s ease;
+  animation: glow 2.4s ease-in-out infinite;
+}
+
+.waiting-banner:hover {
+  transform: translateY(-2px);
+  background: rgba(34, 211, 197, 0.16);
+}
+
+.waiting-banner > span:nth-child(2) {
+  display: grid;
+}
+
+.waiting-banner > span:nth-child(2) span {
+  color: var(--mist);
+  font-size: 13px;
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 197, 0); }
+  50% { box-shadow: 0 0 0 6px rgba(34, 211, 197, 0.12); }
+}
+
+/* Three big doors: Send, Receive, History */
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.action-card {
+  position: relative;
+  display: grid;
+  gap: 16px;
+  height: 100%;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(170deg, rgba(28, 34, 80, 0.9), rgba(21, 26, 58, 0.92));
+  border: 1px solid var(--rim);
+  color: var(--snow);
+  text-decoration: none;
+  box-shadow: var(--shadow);
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.action-card .icon-tile {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+}
+
+.action-card .icon-tile svg {
+  width: 32px;
+  height: 32px;
+}
+
+.action-body {
+  display: grid;
+  gap: 6px;
+}
+
+.action-body strong {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-size: 24px;
+}
+
+.action-body > span {
+  color: var(--mist);
+  font-size: 15px;
+}
+
+.action-arrow {
+  position: absolute;
+  top: 24px;
+  right: 22px;
+  color: var(--mist);
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.action-card:hover {
+  transform: translateY(-4px);
+}
+
+.action-card:hover .action-arrow {
+  transform: translateX(4px);
+  color: var(--snow);
+}
+
+.action-card.grab:hover { border-color: var(--grab); background: linear-gradient(170deg, rgba(255, 107, 74, 0.14), rgba(21, 26, 58, 0.92)); }
+.action-card.drop:hover { border-color: var(--drop); background: linear-gradient(170deg, rgba(34, 211, 197, 0.12), rgba(21, 26, 58, 0.92)); }
+.action-card.trail:hover { border-color: var(--trail); background: linear-gradient(170deg, rgba(157, 140, 255, 0.14), rgba(21, 26, 58, 0.92)); }
+
+.count-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--drop);
+  color: #04221f;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.dash-grid .card + .card {
+  margin-top: 0;
+}
+
+.dash-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.recent-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.recent-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(13, 16, 38, 0.55);
+  border: 1px solid var(--rim);
+}
+
+.recent-list .icon-tile {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+}
+
+.recent-list .icon-tile svg {
+  width: 20px;
+  height: 20px;
+}
+
+.recent-body {
+  display: grid;
+  min-width: 0;
+}
+
+.recent-body strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-body .direction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.recent-body .direction.sent { color: var(--grab-2); }
+.recent-body .direction.received { color: var(--drop-2); }
+
+.history-empty-mini {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.gesture-how {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+}
+
+.gesture-how + .gesture-how {
+  border-top: 1px solid rgba(42, 49, 104, 0.8);
+}
+
+.gesture-how strong {
+  font-family: var(--font-display);
+  font-size: 17px;
+}
+
+.small-note {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .welcome {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dash-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .action-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  /* On phones each door is a compact row */
+  .action-card {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    padding: 16px 44px 16px 16px;
+    gap: 14px;
+  }
+
+  .action-card .icon-tile {
+    width: 54px;
+    height: 54px;
+    border-radius: 17px;
+  }
+
+  .action-body strong {
+    font-size: 20px;
+  }
+
+  .action-body > span {
+    font-size: 14px;
+  }
+
+  .action-arrow {
+    top: 50%;
+    right: 16px;
+    margin-top: -11px;
+  }
+}

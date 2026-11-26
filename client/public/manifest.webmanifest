@@ -3,7 +3,7 @@
   "short_name": "DropIt",
   "description": "Send any file or folder with a grab gesture, receive it with a drop gesture.",
   "id": "/",
-  "start_url": "/home",
+  "start_url": "/dashboard",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",

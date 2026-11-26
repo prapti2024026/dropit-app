@@ -5,6 +5,7 @@ import HomePage from "./pages/HomePage";
 import DropPage from "./pages/DropPage";
 import HistoryPage from "./pages/HistoryPage";
 import FirstPage from "./pages/FirstPage";
+import Dashboard from "./pages/Dashboard";
 
 import { useState, useEffect } from "react";
 import "./pages/FirstPage.css";
@@ -25,7 +26,7 @@ const AppContent = ({
     if (!authReady) return;
 
     if (user && location.pathname === '/') {
-      navigate('/home', { replace: true });
+      navigate('/dashboard', { replace: true });
       return;
     }
 
@@ -34,7 +35,7 @@ const AppContent = ({
       return;
     }
 
-    const validRoutes = ['/', '/home', '/drop', '/history'];
+    const validRoutes = ['/', '/dashboard', '/home', '/drop', '/history'];
 
     if (!validRoutes.includes(location.pathname)) {
       navigate('/', { replace: true });
@@ -53,6 +54,11 @@ const AppContent = ({
         />
 
         {/* Protected routes */}
+        <Route
+          path="/dashboard"
+          element={user ? <Dashboard user={user} onLogout={handleLogout} /> : <Navigate to="/" />}
+        />
+
         <Route
           path="/home"
           element={

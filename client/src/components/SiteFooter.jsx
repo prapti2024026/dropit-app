@@ -19,6 +19,7 @@ const SiteFooter = () => (
       <div>
         <h4>Use DropIt</h4>
         <ul>
+          <li><Link to="/dashboard">Home</Link></li>
           <li><Link to="/home">Send a file</Link></li>
           <li><Link to="/drop">Receive a file</Link></li>
           <li><Link to="/history">Transfer history</Link></li>

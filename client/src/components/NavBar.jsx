@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { History, Inbox, LogOut, Send } from "lucide-react";
+import { History, House, Inbox, LogOut, Send } from "lucide-react";
 import BrandMark from "./BrandMark";
 import { API_URL } from "../lib/api";
 import "./NavBar.css";
 
 // Each section keeps its colour everywhere: Send = coral, Receive = aqua, History = violet
 const LINKS = [
+  { to: "/dashboard", label: "Home", icon: House, tone: "home" },
   { to: "/home", label: "Send", icon: Send, tone: "grab" },
   { to: "/drop", label: "Receive", icon: Inbox, tone: "drop" },
   { to: "/history", label: "History", icon: History, tone: "trail" },
@@ -36,7 +37,7 @@ const NavBar = ({ user, onLogout }) => {
     <>
       <header className="topbar">
         <div className="topbar-inner">
-          <NavLink to="/home" className="topbar-brand" aria-label="DropIt home">
+          <NavLink to="/dashboard" className="topbar-brand" aria-label="DropIt home">
             <BrandMark size={46} />
             <span>DropIt</span>
           </NavLink>

@@ -71,6 +71,7 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
+.topbar-link.home .topbar-link-icon { color: #facc15; }
 .topbar-link.grab .topbar-link-icon { color: var(--grab); }
 .topbar-link.drop .topbar-link-icon { color: var(--drop); }
 .topbar-link.trail .topbar-link-icon { color: var(--trail); }
@@ -86,6 +87,7 @@
   border-color: var(--rim);
 }
 
+.topbar-link.home.active .topbar-link-icon { background: #facc15; color: #3a2402; }
 .topbar-link.grab.active .topbar-link-icon { background: var(--grab); color: #2a0d05; }
 .topbar-link.drop.active .topbar-link-icon { background: var(--drop); color: #04221f; }
 .topbar-link.trail.active .topbar-link-icon { background: var(--trail); color: #160f3d; }
@@ -213,7 +215,7 @@
     bottom: 0;
     z-index: 55;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     background: rgba(13, 16, 38, 0.92);
     backdrop-filter: blur(14px);
@@ -241,6 +243,7 @@
     transition: background 0.15s ease;
   }
 
+  .tabbar-link.home .tabbar-icon { color: #facc15; }
   .tabbar-link.grab .tabbar-icon { color: var(--grab); }
   .tabbar-link.drop .tabbar-icon { color: var(--drop); }
   .tabbar-link.trail .tabbar-icon { color: var(--trail); }
@@ -249,6 +252,7 @@
     color: var(--snow);
   }
 
+  .tabbar-link.home.active .tabbar-icon { background: #facc15; color: #3a2402; }
   .tabbar-link.grab.active .tabbar-icon { background: var(--grab); color: #2a0d05; }
   .tabbar-link.drop.active .tabbar-icon { background: var(--drop); color: #04221f; }
   .tabbar-link.trail.active .tabbar-icon { background: var(--trail); color: #160f3d; }
