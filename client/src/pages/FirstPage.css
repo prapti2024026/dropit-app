@@ -16,9 +16,10 @@
 .landing-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 34px;
+  letter-spacing: -0.02em;
   font-weight: 700;
 }
 
@@ -331,6 +332,22 @@
 }
 
 @media (max-width: 640px) {
+  .landing-brand {
+    font-size: 28px;
+    gap: 11px;
+  }
+
+  .landing-brand .brand-mark {
+    width: 44px !important;
+    height: 44px !important;
+    border-radius: 14px !important;
+  }
+
+  .landing-brand .brand-mark svg {
+    width: 25px;
+    height: 25px;
+  }
+
   .landing-bar,
   .landing main {
     padding-left: 16px;

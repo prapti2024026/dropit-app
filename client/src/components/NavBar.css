@@ -21,7 +21,7 @@
 .topbar-inner {
   max-width: 1120px;
   margin: 0 auto;
-  height: 68px;
+  height: 78px;
   padding: 0 24px;
   display: flex;
   align-items: center;
@@ -31,9 +31,9 @@
 .topbar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-family: var(--font-display);
-  font-size: 21px;
+  font-size: 29px;
   font-weight: 700;
   letter-spacing: -0.02em;
   text-decoration: none;
@@ -178,8 +178,24 @@
 
 @media (max-width: 760px) {
   .topbar-inner {
-    height: 60px;
+    height: 68px;
     padding: 0 16px;
+  }
+
+  /* A little smaller on phones, still the biggest thing in the bar */
+  .topbar-brand {
+    font-size: 25px;
+  }
+
+  .topbar-brand .brand-mark {
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 13px !important;
+  }
+
+  .topbar-brand .brand-mark svg {
+    width: 23px;
+    height: 23px;
   }
 
   .topbar-links {

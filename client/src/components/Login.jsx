@@ -358,7 +358,7 @@ const Login = ({ isOpen, onClose, onLogin, initialMode = "signin" }) => {
         )}
 
         <div className="auth-brand">
-          <BrandMark size={36} />
+          <BrandMark size={44} />
           <span>DropIt</span>
         </div>
 

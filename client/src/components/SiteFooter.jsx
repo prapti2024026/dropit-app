@@ -7,7 +7,7 @@ const SiteFooter = () => (
     <div className="site-footer-inner">
       <div>
         <div className="site-footer-brand">
-          <BrandMark size={30} />
+          <BrandMark size={42} />
           DropIt
         </div>
         <p>

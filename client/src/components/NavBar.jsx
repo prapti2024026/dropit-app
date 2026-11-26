@@ -37,7 +37,7 @@ const NavBar = ({ user, onLogout }) => {
       <header className="topbar">
         <div className="topbar-inner">
           <NavLink to="/home" className="topbar-brand" aria-label="DropIt home">
-            <BrandMark size={34} />
+            <BrandMark size={46} />
             <span>DropIt</span>
           </NavLink>
 

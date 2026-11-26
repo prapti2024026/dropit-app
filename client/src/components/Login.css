@@ -69,9 +69,10 @@
 .auth-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  font-family: var(--font-display);
   font-weight: 700;
-  font-size: 18px;
+  font-size: 25px;
   letter-spacing: 0.2px;
   margin-bottom: 18px;
 }

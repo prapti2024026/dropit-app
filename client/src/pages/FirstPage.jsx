@@ -127,7 +127,7 @@ const FirstPage = ({ onLogin }) => {
 
       <header className="landing-bar">
         <div className="landing-brand">
-          <BrandMark size={36} />
+          <BrandMark size={52} />
           <span>DropIt</span>
         </div>
         <button type="button" className="btn btn-ghost" onClick={() => setAuthMode("signin")}>
