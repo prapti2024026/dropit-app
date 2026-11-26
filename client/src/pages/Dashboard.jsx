@@ -6,6 +6,7 @@ import { ArrowDownLeft, ArrowRight, ArrowUpRight, Grab, Hand, History, Inbox, Se
 import "./Transfer.css";
 import "./Dashboard.css";
 import NavBar from "../components/NavBar";
+import InstallButton from "../components/InstallButton";
 import SiteFooter from "../components/SiteFooter";
 import { API_URL, authHeaders } from "../lib/api";
 import { formatSize } from "../lib/files";
@@ -191,6 +192,13 @@ const Dashboard = ({ user, onLogout }) => {
                 <strong>DROP to receive</strong>
                 <p className="muted">Make a fist, then open your hand.</p>
               </div>
+            </div>
+            <div className="get-app">
+              <div>
+                <strong>Use DropIt like an app</strong>
+                <p className="muted">Install it on your phone or computer. It opens full screen from its own icon.</p>
+              </div>
+              <InstallButton className="btn btn-trail" />
             </div>
             <p className="muted small-note">
               Files up to 200 MB wait on the server for 7 days. Bigger ones go straight to the receiver, so both of you

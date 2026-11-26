@@ -2,6 +2,7 @@ import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { History, House, Inbox, LogOut, Send } from "lucide-react";
 import BrandMark from "./BrandMark";
+import InstallButton from "./InstallButton";
 import { API_URL } from "../lib/api";
 import "./NavBar.css";
 
@@ -88,6 +89,7 @@ const NavBar = ({ user, onLogout }) => {
                     <strong>{user?.name || user?.username}</strong>
                     <span>@{user?.username}</span>
                   </div>
+                  <InstallButton className="account-menu-item" label="Install app" />
                   <button type="button" role="menuitem" className="account-menu-item" onClick={handleLogout}>
                     <LogOut size={17} /> Sign out
                   </button>

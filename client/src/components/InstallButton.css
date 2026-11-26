@@ -1,0 +1,92 @@
+.install-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: end center;
+  padding: 16px;
+  background: rgba(5, 5, 15, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+@media (min-width: 640px) {
+  .install-overlay {
+    place-items: center;
+  }
+}
+
+.install-card {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  padding: 26px 24px 22px;
+  border-radius: 22px;
+  background: var(--deep);
+  border: 1px solid var(--rim);
+  box-shadow: var(--shadow);
+  animation: install-up 0.22s ease-out;
+}
+
+@keyframes install-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.install-card h2 {
+  margin: 14px 0 12px;
+  font-size: 22px;
+}
+
+.install-card ol {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.install-card li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--mist);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.install-step-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--deep-2);
+  border: 1px solid var(--rim);
+  color: var(--snow);
+}
+
+.install-card .btn {
+  width: 100%;
+}
+
+.install-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--mist);
+  cursor: pointer;
+}
+
+.install-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--snow);
+}

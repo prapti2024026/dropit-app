@@ -13,6 +13,7 @@ import {
 import Login from "../components/Login";
 import BrandMark from "../components/BrandMark";
 import SiteFooter from "../components/SiteFooter";
+import InstallButton from "../components/InstallButton";
 import "./FirstPage.css";
 
 const STEPS = [
@@ -130,9 +131,12 @@ const FirstPage = ({ onLogin }) => {
           <BrandMark size={52} />
           <span>DropIt</span>
         </div>
-        <button type="button" className="btn btn-ghost" onClick={() => setAuthMode("signin")}>
-          Sign in
-        </button>
+        <div className="landing-bar-actions">
+          <InstallButton className="btn btn-ghost" label="Install" />
+          <button type="button" className="btn btn-ghost" onClick={() => setAuthMode("signin")}>
+            Sign in
+          </button>
+        </div>
       </header>
 
       <main>

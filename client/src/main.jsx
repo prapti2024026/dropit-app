@@ -7,8 +7,11 @@ import './index.css'
 import App from './App.jsx'
 import { keepServerAwake } from './lib/api'
 import { watchForUpdates } from './lib/appUpdate'
+import { captureInstallPrompt } from './lib/install'
 
 keepServerAwake()
+// Must be listening before Chrome decides DropIt is installable
+captureInstallPrompt()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
