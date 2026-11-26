@@ -26,6 +26,7 @@ import FileCard from "../components/FileCard";
 import { API_URL, authHeaders, errorMessage, getServerLimits, onServerLimits } from "../lib/api";
 import { MAX_UPLOAD_BYTES, categoryOf, formatSize, sha256Hex, zipFolder } from "../lib/files";
 import { isDirectSupported, sendDirect } from "../lib/p2p";
+import { markBusy } from "../lib/appUpdate";
 
 // Seconds between the grab gesture and the actual send, so a wrong grab can be cancelled
 const SEND_CONFIRM_SECONDS = 2;
@@ -126,6 +127,14 @@ const HomePage = ({ user, onLogout }) => {
 
   // A direct transfer needs this tab open: warn before closing it
   const directActive = ["waiting", "connecting", "streaming", "verifying"].includes(phase);
+
+  // Never reload this tab for an app update while something is being sent
+  const transferring = directActive || ["uploading", "countdown", "preparing"].includes(phase);
+  useEffect(() => {
+    if (!transferring) return undefined;
+    markBusy(true);
+    return () => markBusy(false);
+  }, [transferring]);
   useEffect(() => {
     if (!directActive) return undefined;
     const warn = (event) => {
@@ -256,7 +265,9 @@ const HomePage = ({ user, onLogout }) => {
   const sendStraight = useCallback(
     (target) => {
       setPhase("waiting");
-      setMessage(`Waiting for ${target.username} to open Receive and make the DROP gesture…`);
+      setMessage(
+        `Waiting for ${target.username} to DROP. Ask them to open (or refresh) the Receive page: it shows up there as "Direct".`
+      );
       const job = sendDirect({
         file: selected.file,
         name: selected.file.name,

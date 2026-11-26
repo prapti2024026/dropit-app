@@ -6,6 +6,7 @@ import '@fontsource-variable/bricolage-grotesque'
 import './index.css'
 import App from './App.jsx'
 import { keepServerAwake } from './lib/api'
+import { watchForUpdates } from './lib/appUpdate'
 
 keepServerAwake()
 
@@ -16,6 +17,8 @@ createRoot(document.getElementById('root')).render(
 )
 
 // Register the service worker in production builds only (keeps `npm run dev` simple)
+if (import.meta.env.PROD) watchForUpdates()
+
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch((error) => {

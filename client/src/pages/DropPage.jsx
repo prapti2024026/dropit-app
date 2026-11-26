@@ -25,6 +25,7 @@ import FileCard from "../components/FileCard";
 import { API_URL, authHeaders, errorMessage } from "../lib/api";
 import { categoryOf, formatSize, saveBlob, sha256Hex } from "../lib/files";
 import { directInbox, receiveDirect } from "../lib/p2p";
+import { markBusy } from "../lib/appUpdate";
 
 const POLL_MS = 3000;
 
@@ -108,6 +109,14 @@ const DropPage = ({ user, onLogout }) => {
 
   // A direct transfer streams into this tab: warn before closing it mid-way
   const streaming = ["connecting", "streaming", "verifying"].includes(phase);
+
+  // Never reload this tab for an app update while a file is arriving or waiting to be saved
+  const holding = streaming || phase === "receiving" || phase === "received";
+  useEffect(() => {
+    if (!holding) return undefined;
+    markBusy(true);
+    return () => markBusy(false);
+  }, [holding]);
   useEffect(() => {
     if (!streaming) return undefined;
     const warn = (event) => {
